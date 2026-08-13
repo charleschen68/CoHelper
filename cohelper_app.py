@@ -14,6 +14,8 @@ from AppKit import (
     NSApp,
     NSApplication,
     NSApplicationActivationPolicyAccessory,
+    NSButton,
+    NSButtonTypeSwitch,
     NSColor,
     NSFont,
     NSLinkAttributeName,
@@ -21,6 +23,7 @@ from AppKit import (
     NSMenuItem,
     NSModalResponseOK,
     NSOpenPanel,
+    NSPopUpButton,
     NSPasteboard,
     NSPasteboardTypeString,
     NSScrollView,
@@ -29,6 +32,7 @@ from AppKit import (
     NSStatusItem,
     NSTextField,
     NSTextView,
+    NSView,
     NSViewHeightSizable,
     NSViewWidthSizable,
     NSWindow,
@@ -104,6 +108,7 @@ class CohelperApp(NSObject):
         menu.addItemWithTitle_action_keyEquivalent_("暂停监听", "togglePause:", "")
         menu.addItemWithTitle_action_keyEquivalent_("环境诊断与设置", "runDiagnostics:", "")
         menu.addItemWithTitle_action_keyEquivalent_("模型设置", "configureModels:", "")
+        menu.addItemWithTitle_action_keyEquivalent_("高级配置", "configureAdvanced:", "")
         menu.addItemWithTitle_action_keyEquivalent_("取消环境设置", "cancelSetup:", "")
         menu.addItemWithTitle_action_keyEquivalent_("打开配置目录", "openConfig:", "")
         menu.addItem_(NSMenuItem.separatorItem())
@@ -272,6 +277,226 @@ class CohelperApp(NSObject):
         if self._collect_setup_preferences(None):
             self._set_setup_complete(False)
             self._start_setup()
+
+    def configureAdvanced_(self, sender):
+        """Open the complete configuration editor in one transaction."""
+        self._build_advanced_config_window()
+        self.advanced_window.makeKeyAndOrderFront_(None)
+        NSApp().activateIgnoringOtherApps_(True)
+
+    def _build_advanced_config_window(self):
+        if getattr(self, "advanced_window", None) is not None:
+            return
+        self.advanced_window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(760, 60, 720, 780),
+            NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable,
+            NSBackingStoreBuffered,
+            False,
+        )
+        self.advanced_window.setTitle_("cohelper 高级配置")
+        self.advanced_window.setReleasedWhenClosed_(False)
+        self.advanced_controls = {}
+
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(16, 64, 688, 696))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        document = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 660, 1420))
+        scroll.setDocumentView_(document)
+        self.advanced_window.contentView().addSubview_(scroll)
+        self._advanced_document = document
+
+        y = 1380
+        y = self._advanced_section(document, y, "运行模块", "控制剪贴板内容会经过哪些处理，以及是否允许访问外部 API。")
+        for key, title in (("translation", "启用翻译"), ("knowledge_search", "启用知识库检索"), ("knowledge_summary", "启用知识总结")):
+            y = self._advanced_switch(document, y, key, title, self.config.enabled(key))
+        y = self._advanced_switch(document, y, "allow_external_api", "允许外部 API（默认关闭）", bool(self.config.section("privacy")["allow_external_api"]))
+
+        y -= 12
+        y = self._advanced_section(document, y, "剪贴板", "轮询和去抖参数以毫秒为单位；最小/最大字符数用于拒绝不适合处理的内容。")
+        clipboard = self.config.section("clipboard")
+        for key, title in (("min_chars", "最小字符数"), ("max_chars", "最大字符数"), ("poll_interval_ms", "轮询间隔（毫秒）"), ("debounce_ms", "去抖延迟（毫秒）")):
+            y = self._advanced_text(document, y, f"clipboard.{key}", title, str(clipboard[key]))
+        y = self._advanced_switch(document, y, "process_plain_text_only", "只处理纯文本", bool(clipboard["process_plain_text_only"]))
+
+        y -= 12
+        y = self._advanced_section(document, y, "知识库与 QMD", "collection 必须与 QMD 索引中的名称一致；修改 embedding 模型后保存并重新运行环境设置。")
+        knowledge = self.config.section("knowledge")
+        qmd = self.config.section("qmd")
+        y = self._advanced_text(document, y, "knowledge.collection", "Collection", str(knowledge["collection"]))
+        y = self._advanced_path(document, y, "knowledge.source_path", "知识库目录", str(knowledge.get("source_path", "")))
+        for key, title in (("limit", "检索结果数"), ("query_timeout_seconds", "查询超时（秒）"), ("max_summary_source_chars", "总结最大来源字符数")):
+            y = self._advanced_text(document, y, f"knowledge.{key}", title, str(knowledge[key]))
+        y = self._advanced_text(document, y, "qmd.command", "QMD 命令", str(qmd["command"]))
+        y = self._advanced_text(document, y, "qmd.index", "QMD 索引", str(qmd["index"]))
+        y = self._advanced_switch(document, y, "qmd.no_rerank", "禁用 reranking", bool(qmd["no_rerank"]))
+        for key, title in (("embedding", "Embedding 模型"), ("reranking", "Reranking 模型"), ("generation", "Generation 模型")):
+            y = self._advanced_text(document, y, f"qmd.models.{key}", title, str(qmd["models"].get(key, "")), placeholder="留空使用 QMD 默认值")
+
+        for kind, title in (("translation", "翻译模型"), ("summary", "总结模型")):
+            y -= 12
+            y = self._advanced_section(document, y, title, "API Key 只保存到 macOS Keychain，不会写入 config.yaml。")
+            section = self.config.section(kind)
+            y = self._advanced_popup(document, y, f"{kind}.provider", "Provider", ["ollama", "openai-compatible"], str(section["provider"]))
+            y = self._advanced_text(document, y, f"{kind}.model", "模型名称", str(section["model"]))
+            y = self._advanced_text(document, y, f"{kind}.base_url", "Base URL", str(section["base_url"]))
+            y = self._advanced_text(document, y, f"{kind}.timeout_seconds", "超时（秒）", str(section["timeout_seconds"]))
+            y = self._advanced_text(document, y, f"{kind}.credential_account", "Keychain Account", str(section.get("credential_account", kind)))
+            y = self._advanced_secret(document, y, f"{kind}.api_key", "API Key（留空不修改）")
+
+        # Keep the document tall enough for the top-most section.  The scroll
+        # view, rather than the window, owns the vertical layout.
+        document.setFrameSize_((660, 1420))
+        cancel = NSButton.alloc().initWithFrame_(NSMakeRect(500, 18, 90, 30))
+        cancel.setTitle_("取消")
+        cancel.setTarget_(self)
+        cancel.setAction_("cancelAdvancedConfig:")
+        self.advanced_window.contentView().addSubview_(cancel)
+        save = NSButton.alloc().initWithFrame_(NSMakeRect(600, 18, 100, 30))
+        save.setTitle_("保存配置")
+        save.setKeyEquivalent_("\\r")
+        save.setTarget_(self)
+        save.setAction_("saveAdvancedConfig:")
+        self.advanced_window.contentView().addSubview_(save)
+
+    @staticmethod
+    def _advanced_label(parent, y, title, width=210):
+        label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, y, width, 24))
+        label.setStringValue_(title)
+        label.setBezeled_(False)
+        label.setDrawsBackground_(False)
+        label.setEditable_(False)
+        parent.addSubview_(label)
+
+    def _advanced_section(self, parent, y, title, help_text):
+        heading = NSTextField.alloc().initWithFrame_(NSMakeRect(20, y, 620, 28))
+        heading.setStringValue_(title)
+        heading.setFont_(NSFont.boldSystemFontOfSize_(16))
+        heading.setBezeled_(False)
+        heading.setDrawsBackground_(False)
+        heading.setEditable_(False)
+        parent.addSubview_(heading)
+        y -= 23
+        detail = NSTextField.alloc().initWithFrame_(NSMakeRect(20, y, 620, 18))
+        detail.setStringValue_(help_text)
+        detail.setFont_(NSFont.systemFontOfSize_(11))
+        detail.setTextColor_(NSColor.secondaryLabelColor())
+        detail.setBezeled_(False)
+        detail.setDrawsBackground_(False)
+        detail.setEditable_(False)
+        parent.addSubview_(detail)
+        return y - 34
+
+    def _advanced_text(self, parent, y, key, title, value, placeholder=""):
+        self._advanced_label(parent, y, title)
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(235, y, 405, 24))
+        field.setStringValue_(value)
+        if placeholder:
+            field.setPlaceholderString_(placeholder)
+        parent.addSubview_(field)
+        self.advanced_controls[key] = field
+        return y - 34
+
+    def _advanced_secret(self, parent, y, key, title):
+        self._advanced_label(parent, y, title)
+        field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(235, y, 405, 24))
+        field.setPlaceholderString_("留空保持现有 Keychain 凭据")
+        parent.addSubview_(field)
+        self.advanced_controls[key] = field
+        return y - 34
+
+    def _advanced_switch(self, parent, y, key, title, value):
+        button = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 620, 24))
+        button.setButtonType_(NSButtonTypeSwitch)
+        button.setTitle_(title)
+        button.setState_(1 if value else 0)
+        parent.addSubview_(button)
+        self.advanced_controls[key] = button
+        return y - 30
+
+    def _advanced_popup(self, parent, y, key, title, values, selected):
+        self._advanced_label(parent, y, title)
+        popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(235, y, 405, 26), False)
+        popup.addItemsWithTitles_(values)
+        if selected in values:
+            popup.selectItemWithTitle_(selected)
+        parent.addSubview_(popup)
+        self.advanced_controls[key] = popup
+        return y - 34
+
+    def _advanced_path(self, parent, y, key, title, value):
+        y = self._advanced_text(parent, y, key, title, value, placeholder="可留空")
+        browse = NSButton.alloc().initWithFrame_(NSMakeRect(570, y + 34, 70, 24))
+        browse.setTitle_("选择…")
+        browse.setTarget_(self)
+        browse.setAction_("browseAdvancedSource:")
+        parent.addSubview_(browse)
+        return y
+
+    def browseAdvancedSource_(self, sender):
+        panel = NSOpenPanel.openPanel()
+        panel.setTitle_("选择知识库目录")
+        panel.setCanChooseDirectories_(True)
+        panel.setCanChooseFiles_(False)
+        panel.setAllowsMultipleSelection_(False)
+        if panel.runModal() == NSModalResponseOK:
+            self.advanced_controls["knowledge.source_path"].setStringValue_(str(panel.URL().path()))
+
+    def cancelAdvancedConfig_(self, sender):
+        self.advanced_window.orderOut_(None)
+
+    def saveAdvancedConfig_(self, sender):
+        candidate = Config(copy.deepcopy(self.config.values))
+        try:
+            for key, control in self.advanced_controls.items():
+                if key == "allow_external_api":
+                    candidate.section("privacy")["allow_external_api"] = control.state() == 1
+                elif key in {"translation", "knowledge_search", "knowledge_summary", "process_plain_text_only"}:
+                    target = "features" if key in {"translation", "knowledge_search", "knowledge_summary"} else "clipboard"
+                    candidate.section(target)[key] = control.state() == 1
+                elif key == "qmd.no_rerank":
+                    candidate.section("qmd")["no_rerank"] = control.state() == 1
+                elif key.endswith(".provider"):
+                    kind = key.split(".")[0]
+                    candidate.section(kind)["provider"] = str(control.titleOfSelectedItem())
+                elif key.endswith(".api_key"):
+                    continue
+                else:
+                    parts = key.split(".")
+                    section = candidate.section(parts[0])
+                    value = str(control.stringValue()).strip()
+                    if len(parts) == 2:
+                        field = parts[1]
+                        if field in {"min_chars", "max_chars", "poll_interval_ms", "debounce_ms", "limit", "query_timeout_seconds", "max_summary_source_chars", "timeout_seconds"}:
+                            value = int(value)
+                        section[field] = value
+                    else:
+                        section[parts[1]][parts[2]] = value
+            candidate._validate()
+            keychain = KeychainStore()
+            pending = []
+            for kind in ("translation", "summary"):
+                secret = str(self.advanced_controls[f"{kind}.api_key"].stringValue()).strip()
+                if secret:
+                    pending.append((str(candidate.section(kind)["credential_account"]), secret))
+            old = {account: keychain.get(account) for account, _ in pending}
+            for account, secret in pending:
+                keychain.set(account, secret)
+            candidate.save()
+        except Exception as exc:
+            for account, secret in locals().get("old", {}).items():
+                try:
+                    keychain.set(account, secret) if secret else keychain.delete(account)
+                except Exception:
+                    pass
+            self._show_error("配置保存失败", str(exc))
+            return
+        self.config = candidate
+        self.coordinator.config = candidate
+        if hasattr(self, "timer"):
+            self.timer.invalidate()
+            self._start_clipboard_timer()
+        self.advanced_window.orderOut_(None)
+        self._set_status("cohelper")
 
     def _set_setup_complete(self, complete):
         state = SetupState.load()

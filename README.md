@@ -38,7 +38,7 @@ ollama list
 3. 用户确认模型名称与知识库目录后，才执行下载、建库、embedding 和健康查询。
 4. 设置失败或用户选择稍后时保持未完成状态；下次启动继续诊断。
 
-菜单栏的“模型设置”可修改翻译、总结及 QMD 三类模型；“取消环境设置”会终止当前安装子进程。高级 provider、API URL 和功能开关在 `config.yaml` 中配置。
+菜单栏的“模型设置”可执行受控的模型安装；“高级配置”提供完整的图形化编辑器，可修改功能开关、隐私策略、剪贴板参数、知识库/QMD、翻译和总结 provider、URL、超时及模型。保存时会执行完整配置校验；“取消环境设置”会终止当前安装子进程。
 
 API 凭据使用 macOS Keychain。例如为总结 provider 保存凭据：
 
@@ -61,4 +61,4 @@ open dist/cohelper.app
 
 ## 已知边界
 
-当前版本已实现核心服务、AppKit 壳、模型设置、环境诊断、可取消的受控安装、Keychain、PyInstaller `.app` 和测试版 `.dmg` 构建。尚未完成完整可视化配置编辑器、Developer ID 签名/notarization 和干净 Mac 安装验证，不能把本地构建误报为可公开分发的软件。
+当前版本已实现核心服务、AppKit 壳、模型设置、完整可视化配置编辑器、环境诊断、可取消的受控安装、Keychain、PyInstaller `.app` 和测试版 `.dmg` 构建。Developer ID 签名/notarization 和干净 Mac 安装验证仍未完成，不能把本地构建误报为可公开分发的软件。
