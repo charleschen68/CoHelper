@@ -1,0 +1,46 @@
+features:
+  translation: true
+  knowledge_search: true
+  knowledge_summary: true
+
+privacy:
+  allow_external_api: false
+
+clipboard:
+  min_chars: 3
+  max_chars: 20000
+  poll_interval_ms: 400
+  debounce_ms: 500
+  process_plain_text_only: true
+
+knowledge:
+  collection: jarvis-wiki
+  # New users select this Markdown folder during first-run setup.
+  source_path: ""
+  limit: 5
+  query_timeout_seconds: 20
+  max_summary_source_chars: 50000
+
+qmd:
+  command: qmd
+  index: index
+  no_rerank: false
+  models:
+    # Leave blank to use QMD defaults. Confirmed setup rebuilds vectors after a change.
+    embedding: ""
+    reranking: ""
+    generation: ""
+
+translation:
+  provider: ollama
+  model: translategemma:4b
+  base_url: http://127.0.0.1:11434
+  timeout_seconds: 60
+  credential_account: translation
+
+summary:
+  provider: ollama
+  model: rafw007/qwen3.6-35b-A3b-mlx-claude-coder-abliterated:latest
+  base_url: http://127.0.0.1:11434
+  timeout_seconds: 120
+  credential_account: summary
