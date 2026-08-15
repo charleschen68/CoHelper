@@ -34,6 +34,8 @@
 - Added Quartz capture/pointer adapters and in-memory preview annotation.
 - Added Telegram command handler and polling runtime without arbitrary execution.
 - Kept Telegram as a standalone manual process and added shutdown-on-config-change.
+- Added explicit watcher cancellation on normal Telegram shutdown so polling
+  cannot hang while the configuration remains unchanged.
 - Added advanced configuration controls for vision, actions, and Telegram.
 - Wired missing-source responses and paragraph-specific summaries into the
   production menu-bar coordinator; fixed answers to local `qwen3:8b`.
@@ -41,7 +43,7 @@
 ### Verified so far
 
 - Focused TDD tests: 15 passed.
-- Full suite after final reusable-contract repairs: 79 passed.
+- Full suite after final runtime-lifecycle repair: 80 passed.
 - Editable package dependencies installed; `ApplicationServices` is available.
 - Current development runtime reports Screen Recording and Accessibility
   permissions available; the rebuilt `.app` identity still needs to exercise

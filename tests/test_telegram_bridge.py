@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import asyncio
 
 from apps.telegram_bridge.service import TelegramCommandHandler
-from apps.telegram_bridge.runtime import _runtime_config, _watch_runtime_config
+from apps.telegram_bridge.runtime import _cancel_watcher, _runtime_config, _watch_runtime_config
 from cohelper_core import Config
 
 
@@ -115,3 +115,38 @@ def test_runtime_watcher_stops_when_configuration_cannot_be_loaded():
     )
 
     assert application.stopped
+
+
+def test_unchanged_config_watcher_is_cancelled_during_normal_shutdown():
+    original = Config({"telegram": {"enabled": True, "allowed_user_id": 42}})
+
+    class Application:
+        stopped = False
+
+        def stop_running(self):
+            self.stopped = True
+
+    async def scenario():
+        never = asyncio.Event()
+
+        async def wait_forever(seconds):
+            assert seconds == 1
+            await never.wait()
+
+        application = Application()
+        task = asyncio.create_task(
+            _watch_runtime_config(
+                application,
+                _runtime_config(original),
+                load_config=lambda: original,
+                pause=wait_forever,
+            )
+        )
+        await asyncio.sleep(0)
+        await _cancel_watcher(task)
+        return application, task
+
+    application, task = asyncio.run(scenario())
+
+    assert task.cancelled()
+    assert not application.stopped

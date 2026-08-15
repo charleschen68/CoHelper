@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from contextlib import suppress
 from io import BytesIO
 
 from telegram import Update
@@ -101,13 +102,26 @@ class TelegramRuntime:
 
         original_runtime_config = _runtime_config(self._config)
 
+        watcher_task = None
+
         async def post_init(application) -> None:
-            application.create_task(
+            nonlocal watcher_task
+            watcher_task = asyncio.create_task(
                 _watch_runtime_config(application, original_runtime_config),
                 name="ai-drive-config-watch",
             )
 
-        application = ApplicationBuilder().token(token).post_init(post_init).build()
+        async def post_stop(application) -> None:
+            del application
+            await _cancel_watcher(watcher_task)
+
+        application = (
+            ApplicationBuilder()
+            .token(token)
+            .post_init(post_init)
+            .post_stop(post_stop)
+            .build()
+        )
         self._application = application
         application.add_handler(MessageHandler(filters.TEXT, on_message))
         application.run_polling(drop_pending_updates=True, stop_signals=stop_signals)
@@ -157,3 +171,11 @@ async def _watch_runtime_config(
         if _runtime_config(current) != original_runtime_config:
             application.stop_running()
             return
+
+
+async def _cancel_watcher(task: asyncio.Task | None) -> None:
+    if task is None or task.done():
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
