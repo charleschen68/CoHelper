@@ -135,6 +135,8 @@ class ActionService:
         screenshot_max_age: float = 5.0,
         confirmation_ttl: float = 30.0,
     ):
+        if confirmation_ttl != 30.0:
+            raise ValueError("confirmation TTL is fixed to 30 seconds")
         self._inspector = inspector
         self._desktop = desktop
         self._pointer = pointer

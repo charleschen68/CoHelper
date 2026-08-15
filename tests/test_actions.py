@@ -57,6 +57,13 @@ def test_valid_accessible_target_creates_bound_pending_action():
     assert len(pending.screenshot_digest) == 64
 
 
+def test_public_action_service_rejects_longer_confirmation_ttl():
+    with pytest.raises(ValueError, match="fixed to 30 seconds"):
+        ActionService(
+            FakeInspector(), FakeDesktop(), FakePointer(), confirmation_ttl=31
+        )
+
+
 def test_confirm_executes_once_for_bound_user_and_chat():
     pointer = FakePointer()
     service = ActionService(

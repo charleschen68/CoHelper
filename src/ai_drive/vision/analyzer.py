@@ -26,6 +26,8 @@ class TargetCandidate:
 
 class VisionAnalyzer:
     def __init__(self, client: VisionClient, model: str = "qwen2.5vl:7b"):
+        if model != "qwen2.5vl:7b":
+            raise ValueError("vision model is fixed to qwen2.5vl:7b")
         self._client = client
         self._model = model
 

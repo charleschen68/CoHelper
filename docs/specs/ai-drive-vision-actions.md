@@ -37,7 +37,10 @@ Version one supports the main display and a single mouse click only. Qwen
 returns a strictly validated target candidate. Retina coordinate mapping,
 frontmost-application identity, screenshot age, display identity, and
 Accessibility target semantics must be validated before confirmation and again
-before execution. Safari and TextEdit are initially allowlisted. Password,
+before execution. Safari and TextEdit initially pass the application gate, but
+an action is enabled only when an explicit native Accessibility capability also
+matches; the safe default enables Safari toolbar refresh and no TextEdit action.
+Password,
 Keychain, authorization, security settings, destructive, purchase, and system
 permission targets are rejected. There is no blind-click fallback.
 

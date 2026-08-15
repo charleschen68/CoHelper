@@ -46,3 +46,8 @@ def test_vision_analyzer_rejects_markdown_or_partial_schema():
 
     with pytest.raises(VisionAnalysisError, match="JSON"):
         VisionAnalyzer(MarkdownVisionClient()).locate(screenshot, "刷新页面")
+
+
+def test_public_analyzer_rejects_model_override():
+    with pytest.raises(ValueError, match="fixed to qwen2.5vl:7b"):
+        VisionAnalyzer(FakeVisionClient(), model="another-model")

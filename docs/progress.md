@@ -41,7 +41,7 @@
 ### Verified so far
 
 - Focused TDD tests: 15 passed.
-- Full suite after second-round review repairs: 77 passed.
+- Full suite after final reusable-contract repairs: 79 passed.
 - Editable package dependencies installed; `ApplicationServices` is available.
 - Current development runtime reports Screen Recording and Accessibility
   permissions available; the rebuilt `.app` identity still needs to exercise
@@ -59,7 +59,6 @@
 - Configure Telegram User ID and Keychain Token without reading Dofi secrets.
 - Grant `.app` Screen Recording and Accessibility permissions.
 - Run real preview-confirm-click-result acceptance.
-- Rebuild and verify `.app` and DMG after the second-round safety repairs.
 - Re-run the two-axis code review after those repairs.
 - Commit the reviewed repairs; merge local `main` only after all live acceptance
   criteria pass.
