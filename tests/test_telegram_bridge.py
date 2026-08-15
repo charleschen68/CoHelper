@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 
 from apps.telegram_bridge.service import TelegramCommandHandler
+from apps.telegram_bridge.runtime import _runtime_config
+from cohelper_core import Config
 
 
 @dataclass
@@ -49,3 +51,12 @@ def test_ordinary_message_never_enters_action_workflow():
 
     assert reply.text == "chat:点击刷新按钮"
     assert workflow.prepared == []
+
+
+def test_runtime_config_changes_when_bridge_is_disabled_or_identity_changes():
+    original = Config({"telegram": {"enabled": True, "allowed_user_id": 42}})
+    disabled = Config({"telegram": {"enabled": False, "allowed_user_id": 42}})
+    another_user = Config({"telegram": {"enabled": True, "allowed_user_id": 99}})
+
+    assert _runtime_config(original) != _runtime_config(disabled)
+    assert _runtime_config(original) != _runtime_config(another_user)

@@ -35,6 +35,8 @@ class PendingAction:
     user_id: int
     chat_id: int
     point: ScreenPoint
+    target_description: str
+    accessible_role: str
     accessible_title: str
     display_id: int
     frontmost_bundle_id: str
@@ -107,6 +109,9 @@ class ActionService:
         now: Callable[[], float] = time.time,
         id_factory: Callable[[], str] = lambda: secrets.token_hex(4).upper(),
         allowed_bundle_ids: frozenset[str] = frozenset({"com.apple.Safari", "com.apple.TextEdit"}),
+        allowed_accessibility_labels: frozenset[str] = frozenset(
+            {"刷新按钮", "Reload this page", "Refresh"}
+        ),
         minimum_confidence: float = 0.75,
         screenshot_max_age: float = 5.0,
         confirmation_ttl: float = 30.0,
@@ -117,6 +122,9 @@ class ActionService:
         self._now = now
         self._id_factory = id_factory
         self._allowed_bundle_ids = allowed_bundle_ids
+        self._allowed_accessibility_labels = frozenset(
+            label.casefold() for label in allowed_accessibility_labels
+        )
         self._minimum_confidence = minimum_confidence
         self._screenshot_max_age = screenshot_max_age
         self._confirmation_ttl = confirmation_ttl
@@ -139,34 +147,65 @@ class ActionService:
             raise ActionRejected("vision confidence is too low")
         point = screenshot.to_screen_point(target.point)
         accessible = self._inspector.target_at(point)
-        if accessible is None or accessible.role not in _ACTIONABLE_ROLES or not accessible.enabled:
-            raise ActionRejected("target is not a confirmed actionable Accessibility element")
-        combined = f"{target.description} {accessible.title}".casefold()
-        if any(term in combined for term in _SENSITIVE_TERMS):
-            raise ActionRejected("sensitive action is forbidden")
-        if not accessible.title or not _labels_match(target.description, accessible.title):
-            raise ActionRejected("vision target does not match Accessibility target")
-        action = PendingAction(
-            self._id_factory(), user_id, chat_id, point, accessible.title,
-            screenshot.display_id, screenshot.frontmost_bundle_id, now, sha256(screenshot.image).hexdigest(),
-        )
+        self._validate_accessible(target.description, accessible)
         with self._pending_lock:
             previous = self._pending_by_user.get(user_id)
             if previous:
                 self._pending.pop(previous, None)
+            action_id = ""
+            for _ in range(5):
+                candidate_id = self._id_factory()
+                if candidate_id not in self._pending:
+                    action_id = candidate_id
+                    break
+            if not action_id:
+                raise ActionRejected("could not allocate a unique action identifier")
+            assert accessible is not None
+            action = PendingAction(
+                action_id,
+                user_id,
+                chat_id,
+                point,
+                target.description,
+                accessible.role,
+                accessible.title,
+                screenshot.display_id,
+                screenshot.frontmost_bundle_id,
+                now,
+                sha256(screenshot.image).hexdigest(),
+            )
             self._pending[action.action_id] = action
             self._pending_by_user[user_id] = action.action_id
         return action
 
-    def confirm(self, action_id: str, *, user_id: int, chat_id: int) -> ActionResult:
+    def confirm(
+        self,
+        action_id: str,
+        *,
+        user_id: int,
+        chat_id: int,
+        screenshot: Screenshot,
+    ) -> ActionResult:
         action = self._consume(action_id, user_id=user_id, chat_id=chat_id)
-        if self._now() - action.created_at > self._confirmation_ttl:
+        now = self._now()
+        if now - action.created_at > self._confirmation_ttl:
             raise ActionRejected("pending action expired")
+        if now - screenshot.captured_at > self._screenshot_max_age:
+            raise ActionRejected("confirmation screenshot is stale")
+        if screenshot.display_id != action.display_id or screenshot.frontmost_bundle_id != action.frontmost_bundle_id:
+            raise ActionRejected("confirmation screenshot desktop state changed")
+        if sha256(screenshot.image).hexdigest() != action.screenshot_digest:
+            raise ActionRejected("screen content changed before confirmation")
         state = self._desktop.state()
         if state != DesktopState(action.display_id, action.frontmost_bundle_id):
             raise ActionRejected("desktop state changed before confirmation")
         accessible = self._inspector.target_at(action.point)
-        if accessible is None or not accessible.enabled or accessible.title != action.accessible_title:
+        self._validate_accessible(action.target_description, accessible)
+        if (
+            accessible is None
+            or accessible.role != action.accessible_role
+            or accessible.title != action.accessible_title
+        ):
             raise ActionRejected("Accessibility target changed before confirmation")
         self._pointer.click(action.point)
         return ActionResult(action.action_id, action.point)
@@ -185,3 +224,16 @@ class ActionService:
             if self._pending_by_user.get(action.user_id) == action.action_id:
                 self._pending_by_user.pop(action.user_id, None)
             return action
+
+    def _validate_accessible(
+        self, target_description: str, accessible: AccessibleTarget | None
+    ) -> None:
+        if accessible is None or accessible.role not in _ACTIONABLE_ROLES or not accessible.enabled:
+            raise ActionRejected("target is not a confirmed actionable Accessibility element")
+        combined = f"{target_description} {accessible.title}".casefold()
+        if any(term in combined for term in _SENSITIVE_TERMS):
+            raise ActionRejected("sensitive action is forbidden")
+        if accessible.title.casefold() not in self._allowed_accessibility_labels:
+            raise ActionRejected("Accessibility target is not in the safe-label allowlist")
+        if not _labels_match(target_description, accessible.title):
+            raise ActionRejected("vision target does not match Accessibility target")

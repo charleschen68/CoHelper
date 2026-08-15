@@ -6,8 +6,11 @@ from ai_drive.vision import NormalizedPoint, Screenshot, TargetCandidate
 
 
 class FakeInspector:
+    def __init__(self):
+        self.target = AccessibleTarget(role="AXButton", title="刷新按钮", enabled=True)
+
     def target_at(self, point):
-        return AccessibleTarget(role="AXButton", title="刷新按钮", enabled=True)
+        return self.target
 
 
 class FakeDesktop:
@@ -23,8 +26,8 @@ class FakePointer:
         self.clicks.append(point)
 
 
-def screenshot():
-    return Screenshot(b"jpeg", 200, 100, 100, 50, 1, 98.0, "com.apple.Safari")
+def screenshot(image=b"jpeg", captured_at=98.0, display_id=1, bundle_id="com.apple.Safari"):
+    return Screenshot(image, 200, 100, 100, 50, display_id, captured_at, bundle_id)
 
 
 def test_valid_accessible_target_creates_bound_pending_action():
@@ -57,13 +60,13 @@ def test_confirm_executes_once_for_bound_user_and_chat():
         screenshot(), TargetCandidate(NormalizedPoint(500, 500), 0.91, "刷新按钮"), user_id=42, chat_id=7
     )
 
-    result = service.confirm("A7K3", user_id=42, chat_id=7)
+    result = service.confirm("A7K3", user_id=42, chat_id=7, screenshot=screenshot())
 
     assert result.action_id == "A7K3"
     assert pointer.clicks == [result.point]
 
     with pytest.raises(ActionRejected, match="does not exist"):
-        service.confirm("A7K3", user_id=42, chat_id=7)
+        service.confirm("A7K3", user_id=42, chat_id=7, screenshot=screenshot())
 
 
 class SensitiveInspector:
@@ -110,7 +113,7 @@ def test_expired_confirmation_never_clicks():
     )
 
     with pytest.raises(ActionRejected, match="expired"):
-        service.confirm("A7K3", user_id=42, chat_id=7)
+        service.confirm("A7K3", user_id=42, chat_id=7, screenshot=screenshot(captured_at=131.0))
 
     assert pointer.clicks == []
 
@@ -129,7 +132,7 @@ def test_concurrent_confirmation_can_click_only_once():
     def confirm():
         barrier.wait()
         try:
-            service.confirm("A7K3", user_id=42, chat_id=7)
+            service.confirm("A7K3", user_id=42, chat_id=7, screenshot=screenshot())
             outcomes.append("clicked")
         except ActionRejected:
             outcomes.append("rejected")
@@ -143,3 +146,87 @@ def test_concurrent_confirmation_can_click_only_once():
 
     assert sorted(outcomes) == ["clicked", "rejected"]
     assert len(pointer.clicks) == 1
+
+
+def test_changed_screen_content_consumes_token_without_clicking():
+    pointer = FakePointer()
+    service = ActionService(
+        FakeInspector(), FakeDesktop(), pointer, now=lambda: 100.0, id_factory=lambda: "A7K3"
+    )
+    service.prepare_click(
+        screenshot(), TargetCandidate(NormalizedPoint(500, 500), 0.91, "刷新按钮"), user_id=42, chat_id=7
+    )
+
+    with pytest.raises(ActionRejected, match="screen content changed"):
+        service.confirm("A7K3", user_id=42, chat_id=7, screenshot=screenshot(image=b"changed"))
+    with pytest.raises(ActionRejected, match="does not exist"):
+        service.confirm("A7K3", user_id=42, chat_id=7, screenshot=screenshot())
+    assert pointer.clicks == []
+
+
+@pytest.mark.parametrize(
+    ("confirmation", "message"),
+    [
+        (screenshot(display_id=2), "desktop state changed"),
+        (screenshot(bundle_id="com.apple.TextEdit"), "desktop state changed"),
+    ],
+)
+def test_confirmation_rejects_changed_display_or_application(confirmation, message):
+    pointer = FakePointer()
+    service = ActionService(
+        FakeInspector(), FakeDesktop(), pointer, now=lambda: 100.0, id_factory=lambda: "A7K3"
+    )
+    service.prepare_click(
+        screenshot(), TargetCandidate(NormalizedPoint(500, 500), 0.91, "刷新按钮"), user_id=42, chat_id=7
+    )
+
+    with pytest.raises(ActionRejected, match=message):
+        service.confirm("A7K3", user_id=42, chat_id=7, screenshot=confirmation)
+    assert pointer.clicks == []
+
+
+def test_wrong_user_or_chat_cannot_consume_an_action():
+    pointer = FakePointer()
+    service = ActionService(
+        FakeInspector(), FakeDesktop(), pointer, now=lambda: 100.0, id_factory=lambda: "A7K3"
+    )
+    service.prepare_click(
+        screenshot(), TargetCandidate(NormalizedPoint(500, 500), 0.91, "刷新按钮"), user_id=42, chat_id=7
+    )
+
+    with pytest.raises(ActionRejected, match="belongs"):
+        service.confirm("A7K3", user_id=99, chat_id=7, screenshot=screenshot())
+    service.confirm("A7K3", user_id=42, chat_id=7, screenshot=screenshot())
+    assert len(pointer.clicks) == 1
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        AccessibleTarget(role="AXStaticText", title="刷新按钮", enabled=True),
+        AccessibleTarget(role="AXButton", title="删除", enabled=True),
+    ],
+)
+def test_confirmation_revalidates_role_and_sensitive_semantics(changed):
+    inspector = FakeInspector()
+    pointer = FakePointer()
+    service = ActionService(inspector, FakeDesktop(), pointer, now=lambda: 100.0, id_factory=lambda: "A7K3")
+    service.prepare_click(
+        screenshot(), TargetCandidate(NormalizedPoint(500, 500), 0.91, "刷新按钮"), user_id=42, chat_id=7
+    )
+    inspector.target = changed
+
+    with pytest.raises(ActionRejected):
+        service.confirm("A7K3", user_id=42, chat_id=7, screenshot=screenshot())
+    assert pointer.clicks == []
+
+
+def test_action_identifier_collision_never_overwrites_another_users_action():
+    service = ActionService(
+        FakeInspector(), FakeDesktop(), FakePointer(), now=lambda: 100.0, id_factory=lambda: "COLLIDE"
+    )
+    target = TargetCandidate(NormalizedPoint(500, 500), 0.91, "刷新按钮")
+    service.prepare_click(screenshot(), target, user_id=42, chat_id=7)
+
+    with pytest.raises(ActionRejected, match="unique"):
+        service.prepare_click(screenshot(), target, user_id=99, chat_id=8)

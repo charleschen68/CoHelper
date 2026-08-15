@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
-from apps.clipboard_helper.service import ClipboardKind, classify_clipboard_text
+from apps.clipboard_helper.service import route_clipboard_text
 from cohelper_setup import EnvironmentDoctor, KeychainStore, resolve_command
 
 
@@ -40,6 +40,7 @@ DEFAULT_CONFIG = {
     "vision": {"model": "qwen2.5vl:7b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 90},
     "actions": {
         "allowed_bundle_ids": ["com.apple.Safari", "com.apple.TextEdit"],
+        "allowed_accessibility_labels": ["刷新按钮", "Reload this page", "Refresh"],
         "minimum_confidence": 0.75,
         "screenshot_max_age_seconds": 5,
         "confirmation_ttl_seconds": 30,
@@ -125,6 +126,14 @@ class Config:
                 raise ConfigError(f"{section_name}.model 不能为空")
             if not urlparse(str(section.get("base_url", ""))).scheme:
                 raise ConfigError(f"{section_name}.base_url 必须是完整 URL")
+        summary = self.values["summary"]
+        summary_url = urlparse(str(summary.get("base_url", "")))
+        if summary.get("provider") != "ollama":
+            raise ConfigError("summary.provider 必须是本机 ollama")
+        if summary.get("model") != "qwen3:8b":
+            raise ConfigError("summary.model 必须是 qwen3:8b")
+        if summary_url.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            raise ConfigError("summary.base_url 必须是本机 Ollama 地址")
         vision = self.values["vision"]
         vision_url = urlparse(str(vision.get("base_url", "")))
         if vision_url.hostname not in {"127.0.0.1", "localhost", "::1"}:
@@ -134,6 +143,13 @@ class Config:
         allowed = self.values["actions"].get("allowed_bundle_ids")
         if not isinstance(allowed, list) or not allowed or not all(isinstance(item, str) and item for item in allowed):
             raise ConfigError("actions.allowed_bundle_ids 必须是非空字符串列表")
+        allowed_labels = self.values["actions"].get("allowed_accessibility_labels")
+        if (
+            not isinstance(allowed_labels, list)
+            or not allowed_labels
+            or not all(isinstance(item, str) and item.strip() for item in allowed_labels)
+        ):
+            raise ConfigError("actions.allowed_accessibility_labels 必须是非空字符串列表")
         actions = self.values["actions"]
         try:
             confidence = float(actions["minimum_confidence"])
@@ -407,9 +423,16 @@ class QmdClient:
                 continue
 
 
-def build_knowledge_prompt(query: str, documents: list[tuple[KnowledgeHit, str]], max_source_chars: int = 50000) -> str:
+def build_knowledge_prompt(
+    query: str,
+    documents: list[tuple[KnowledgeHit, str]],
+    max_source_chars: int = 50000,
+    task: str = "answer",
+) -> str:
+    label = "用户段落" if task == "summarize" else "用户问题"
+    instruction = "请总结该段落与知识库来源的关系。" if task == "summarize" else "请依据知识库来源回答。"
     if not documents:
-        return f"用户问题：\n{query}\n\n没有检索到知识库来源。请明确说明没有足够依据。"
+        return f"{label}：\n{query}\n\n没有检索到知识库来源。请明确说明没有足够依据。"
     remaining = max_source_chars
     rendered = []
     for hit, content in documents:
@@ -419,7 +442,7 @@ def build_knowledge_prompt(query: str, documents: list[tuple[KnowledgeHit, str]]
         rendered.append(f"来源：{hit.path}\n{excerpt}")
         remaining -= len(excerpt)
     sources = "\n\n".join(rendered)
-    return f"用户问题：\n{query}\n\n知识库来源：\n{sources}"
+    return f"处理要求：{instruction}\n\n{label}：\n{query}\n\n知识库来源：\n{sources}"
 
 
 @dataclass
@@ -506,22 +529,25 @@ class TaskCoordinator:
 
     def _knowledge(self, generation: int, text: str, cancel: threading.Event) -> None:
         try:
-            kind = classify_clipboard_text(text)
-            query = f"什么是 {text.strip()}？" if kind is ClipboardKind.TERM else text.strip()
+            route = route_clipboard_text(text)
             qmd = QmdClient(self.config)
-            hits = qmd.search(query, cancel)
+            hits = qmd.search(route.query, cancel)
             if self._current(generation, cancel):
                 self.callbacks.on_knowledge(hits)
-            if not self.config.enabled("knowledge_answer") or not hits or not self._current(generation, cancel):
+            if not self.config.enabled("knowledge_answer") or not self._current(generation, cancel):
+                return
+            if not hits:
+                self.callbacks.on_summary(ModelResult(text="知识库中没有足够依据。", provider="knowledge"))
                 return
             documents = [(hit, qmd.get(hit, cancel)) for hit in hits]
             if self._external_blocked(text, "summary"):
                 result = ModelResult(error="外部 API 被隐私策略阻止", provider="blocked")
             else:
                 prompt = build_knowledge_prompt(
-                    query,
+                    route.query,
                     documents,
                     int(self.config.section("knowledge")["max_summary_source_chars"]),
+                    route.task,
                 )
                 if self._external_blocked(prompt, "summary"):
                     result = ModelResult(error="知识库来源包含疑似敏感信息，外部 API 被隐私策略阻止", provider="blocked")

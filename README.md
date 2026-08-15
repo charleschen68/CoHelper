@@ -8,7 +8,7 @@
 - PyObjC/AppKit 菜单栏应用与置顶结果窗口。
 - 问题、短术语和普通段落都会翻译；术语会改写为“什么是 X？”。
 - 翻译、QMD 检索、知识回答/总结独立开关；关闭功能不会调用对应资源。
-- 回答模型默认为本机 Ollama `qwen3:8b`，回答只能依据 QMD 来源。
+- 回答模型固定为本机 Ollama `qwen3:8b`，配置校验拒绝远程回答端点和其他回答模型；回答只能依据 QMD 来源。
 - `src/ai_drive/vision` 使用 Quartz 截取主显示器，并由本机 `qwen2.5vl:7b` 返回严格坐标 JSON。
 - `src/ai_drive/actions` 使用 Accessibility 二次校验、应用白名单、截图时效和一次性确认保护 Quartz 单击。
 - `apps/telegram_bridge` 只接受 `/click`、`/confirm` 和 `/cancel` 动作协议，不接受任意 Python 或 Shell。
@@ -76,7 +76,9 @@ ai-drive-telegram
 /confirm A7K3
 ```
 
-操作编号由 Bot 生成，30 秒后失效且只能使用一次。只允许 Safari 与 TextEdit；敏感按钮和 Accessibility 无法确认的目标会被拒绝。Telegram 预览会经过 Telegram 服务器，不应在敏感桌面上使用。
+操作编号由 Bot 生成，30 秒后失效且只能使用一次。只允许 Safari 与 TextEdit，并且 Accessibility 标题必须精确匹配 `actions.allowed_accessibility_labels` 中的安全操作；默认仅包含刷新操作。确认时会重新截图并要求屏幕摘要、应用、显示器和 Accessibility 语义完全一致。敏感按钮和无法确认的目标会被拒绝。Telegram 预览会经过 Telegram 服务器，不应在敏感桌面上使用。
+
+Bridge 是独立的手动进程，不嵌入菜单栏线程，也不随登录自动启动。运行期间若 Telegram、视觉或动作安全配置改变，Bridge 会停止；重新执行 `ai-drive-telegram` 才会加载新配置。
 
 ## 构建 `.app`
 

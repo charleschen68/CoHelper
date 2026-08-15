@@ -13,6 +13,13 @@ class ClipboardKind(Enum):
     PARAGRAPH = "paragraph"
 
 
+@dataclass(frozen=True)
+class ClipboardRoute:
+    kind: ClipboardKind
+    query: str
+    task: str
+
+
 class Translator(Protocol):
     def translate(self, text: str) -> str: ...
 
@@ -59,16 +66,14 @@ class ClipboardAssistant:
         self._features = features or ClipboardFeatures()
 
     def process(self, text: str) -> ClipboardResult:
-        kind = classify_clipboard_text(text)
-        stripped = text.strip()
-        query = f"什么是 {stripped}？" if kind is ClipboardKind.TERM else stripped
+        route = route_clipboard_text(text)
         translation = self._translator.translate(text) if self._features.translation else None
-        sources = self._searcher.search(query) if self._features.search else []
+        sources = self._searcher.search(route.query) if self._features.search else []
         if self._features.answer:
-            answer = self._answerer.answer(query, sources, kind) if sources else "知识库中没有足够依据。"
+            answer = self._answerer.answer(route.query, sources, route.kind) if sources else "知识库中没有足够依据。"
         else:
             answer = None
-        return ClipboardResult(kind, query, translation, sources, answer)
+        return ClipboardResult(route.kind, route.query, translation, sources, answer)
 
 
 def classify_clipboard_text(text: str) -> ClipboardKind:
@@ -79,3 +84,11 @@ def classify_clipboard_text(text: str) -> ClipboardKind:
     if "\n" not in stripped and len(stripped) <= 32 and not any(mark in stripped for mark in "。.!！；;"):
         return ClipboardKind.TERM
     return ClipboardKind.PARAGRAPH
+
+
+def route_clipboard_text(text: str) -> ClipboardRoute:
+    stripped = text.strip()
+    kind = classify_clipboard_text(stripped)
+    if kind is ClipboardKind.TERM:
+        return ClipboardRoute(kind, f"什么是 {stripped}？", "answer")
+    return ClipboardRoute(kind, stripped, "summarize" if kind is ClipboardKind.PARAGRAPH else "answer")

@@ -21,8 +21,12 @@ used.
 - One-use, 30-second action IDs bound to user and chat.
 - Main-display and frontmost-application identity binding.
 - Safari/TextEdit bundle allowlist.
+- Exact safe Accessibility-title allowlist; defaults cover refresh only.
 - Strict vision schema and minimum confidence.
-- Accessibility role, title, enabled-state, and sensitive-target validation.
+- Confirmation-time fresh screenshot, byte digest, display, application, and
+  age validation. Any mismatch consumes the one-use token without clicking.
+- Accessibility role, title, enabled-state, safe-label, and sensitive-target
+  validation before preview and again immediately before execution.
 - No blind-click fallback and no arbitrary code, shell, keyboard, drag, or
   double-click interface.
 - Memory-only screenshots; Telegram uses in-memory byte streams.
@@ -30,7 +34,9 @@ used.
 
 ## Remaining risks
 
-Vision and Accessibility labels can still be wrong. UI can change between the
-final validation and event delivery. Telegram retains data according to its own
-policies. Ad-hoc signing is not a distribution trust chain. These risks are why
-actions remain single-click, allowlisted, confirmed, and local-only.
+Vision and Accessibility labels can still be wrong. UI can change in the very
+small interval between final validation and event delivery. Dynamic screen
+content can conservatively invalidate a legitimate confirmation. Telegram
+retains data according to its own policies. Ad-hoc signing is not a distribution
+trust chain. These risks are why actions remain single-click, allowlisted,
+confirmed, and local-only.

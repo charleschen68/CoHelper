@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from ai_drive.actions import ActionService
-from ai_drive.macos import annotate_target
+from ai_drive.macos import annotate_target, compress_screenshot
 from ai_drive.vision import Screenshot, VisionAnalyzer
 
 
@@ -34,8 +34,14 @@ class VisualClickWorkflow:
         return PreparedVisualClick(pending.action_id, preview)
 
     def confirm(self, action_id: str, user_id: int, chat_id: int) -> bytes:
-        self._actions.confirm(action_id, user_id=user_id, chat_id=chat_id)
-        return self._capture.capture_main_display().image
+        confirmation = self._capture.capture_main_display()
+        self._actions.confirm(
+            action_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            screenshot=confirmation,
+        )
+        return compress_screenshot(self._capture.capture_main_display())
 
     def cancel(self, action_id: str, user_id: int, chat_id: int) -> None:
         self._actions.cancel(action_id, user_id=user_id, chat_id=chat_id)

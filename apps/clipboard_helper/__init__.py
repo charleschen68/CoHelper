@@ -1,3 +1,10 @@
-from .service import ClipboardAssistant, ClipboardFeatures, ClipboardKind, ClipboardResult
+from .service import ClipboardAssistant, ClipboardFeatures, ClipboardKind, ClipboardResult, ClipboardRoute, route_clipboard_text
 
-__all__ = ["ClipboardAssistant", "ClipboardFeatures", "ClipboardKind", "ClipboardResult"]
+__all__ = [
+    "ClipboardAssistant",
+    "ClipboardFeatures",
+    "ClipboardKind",
+    "ClipboardResult",
+    "ClipboardRoute",
+    "route_clipboard_text",
+]

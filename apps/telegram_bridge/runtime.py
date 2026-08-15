@@ -41,6 +41,7 @@ def build_handler(config: Config) -> tuple[TelegramCommandHandler, int]:
         QuartzDesktopObserver(),
         QuartzPointerController(),
         allowed_bundle_ids=frozenset(actions["allowed_bundle_ids"]),
+        allowed_accessibility_labels=frozenset(actions["allowed_accessibility_labels"]),
         minimum_confidence=float(actions["minimum_confidence"]),
         screenshot_max_age=float(actions["screenshot_max_age_seconds"]),
         confirmation_ttl=float(actions["confirmation_ttl_seconds"]),
@@ -95,7 +96,24 @@ class TelegramRuntime:
                 reply = Reply(f"操作被拒绝：{type(exc).__name__}: {exc}")
             await _send_reply(update, reply)
 
-        application = ApplicationBuilder().token(token).build()
+        original_runtime_config = _runtime_config(self._config)
+
+        async def post_init(application) -> None:
+            async def watch_config() -> None:
+                while True:
+                    await asyncio.sleep(1)
+                    try:
+                        current = Config.load()
+                    except Exception:
+                        application.stop_running()
+                        return
+                    if _runtime_config(current) != original_runtime_config:
+                        application.stop_running()
+                        return
+
+            application.create_task(watch_config(), name="ai-drive-config-watch")
+
+        application = ApplicationBuilder().token(token).post_init(post_init).build()
         self._application = application
         application.add_handler(MessageHandler(filters.TEXT, on_message))
         application.run_polling(drop_pending_updates=True, stop_signals=stop_signals)
@@ -107,3 +125,21 @@ class TelegramRuntime:
 
 def run() -> None:
     TelegramRuntime().run()
+
+
+def _runtime_config(config: Config) -> tuple[object, ...]:
+    """Return security-relevant values that require a clean Bridge restart."""
+    telegram = config.section("telegram")
+    vision = config.section("vision")
+    actions = config.section("actions")
+    return (
+        telegram["enabled"],
+        telegram["allowed_user_id"],
+        telegram["credential_account"],
+        tuple(sorted(vision.items())),
+        tuple(actions["allowed_bundle_ids"]),
+        tuple(actions["allowed_accessibility_labels"]),
+        actions["minimum_confidence"],
+        actions["screenshot_max_age_seconds"],
+        actions["confirmation_ttl_seconds"],
+    )

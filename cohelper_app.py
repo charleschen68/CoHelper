@@ -75,8 +75,6 @@ class CohelperApp(NSObject):
         self.status_item: NSStatusItem | None = None
         self.setup_installer = None
         self.setup_thread = None
-        self.telegram_thread = None
-        self.telegram_runtime = None
         return self
 
     def applicationDidFinishLaunching_(self, notification):
@@ -91,29 +89,6 @@ class CohelperApp(NSObject):
             if not CONFIG_PATH.exists():
                 self.config.save()
             self.runDiagnostics_(None)
-        self._sync_telegram_bridge()
-
-    def _sync_telegram_bridge(self):
-        if not self.config.section("telegram")["enabled"]:
-            if self.telegram_runtime is not None:
-                self.telegram_runtime.stop()
-                self.telegram_runtime = None
-            return
-        if self.telegram_thread and self.telegram_thread.is_alive():
-            return
-
-        def worker():
-            try:
-                from apps.telegram_bridge.runtime import TelegramRuntime
-
-                runtime = TelegramRuntime(self.config)
-                self.telegram_runtime = runtime
-                runtime.run(stop_signals=None)
-            except Exception as exc:
-                AppHelper.callAfter(self._show_error, "Telegram Bridge 启动失败", f"{type(exc).__name__}: {exc}")
-
-        self.telegram_thread = threading.Thread(target=worker, daemon=True, name="ai-drive-telegram")
-        self.telegram_thread.start()
 
     def _callbacks(self):
         return TaskCallbacks(
@@ -379,7 +354,8 @@ class CohelperApp(NSObject):
             y -= 12
             y = self._advanced_section(document, y, title, "API Key 只保存到 macOS Keychain，不会写入 config.yaml。")
             section = self.config.section(kind)
-            y = self._advanced_popup(document, y, f"{kind}.provider", "Provider", ["ollama", "openai-compatible"], str(section["provider"]))
+            providers = ["ollama", "openai-compatible"] if kind == "translation" else ["ollama"]
+            y = self._advanced_popup(document, y, f"{kind}.provider", "Provider", providers, str(section["provider"]))
             y = self._advanced_text(document, y, f"{kind}.model", "模型名称", str(section["model"]))
             y = self._advanced_text(document, y, f"{kind}.base_url", "Base URL", str(section["base_url"]))
             y = self._advanced_text(document, y, f"{kind}.timeout_seconds", "超时（秒）", str(section["timeout_seconds"]))
@@ -394,6 +370,7 @@ class CohelperApp(NSObject):
         y = self._advanced_text(document, y, "vision.base_url", "Ollama URL", str(vision["base_url"]))
         y = self._advanced_text(document, y, "vision.timeout_seconds", "视觉超时（秒）", str(vision["timeout_seconds"]))
         y = self._advanced_text(document, y, "actions.allowed_bundle_ids", "允许的 Bundle ID（逗号分隔）", ",".join(actions["allowed_bundle_ids"]))
+        y = self._advanced_text(document, y, "actions.allowed_accessibility_labels", "安全 Accessibility 标题（逗号分隔）", ",".join(actions["allowed_accessibility_labels"]))
         y = self._advanced_text(document, y, "actions.minimum_confidence", "最低视觉置信度", str(actions["minimum_confidence"]))
         y = self._advanced_text(document, y, "actions.screenshot_max_age_seconds", "截图最大时效（秒）", str(actions["screenshot_max_age_seconds"]))
         y = self._advanced_text(document, y, "actions.confirmation_ttl_seconds", "确认有效期（秒）", str(actions["confirmation_ttl_seconds"]))
@@ -532,7 +509,7 @@ class CohelperApp(NSObject):
                     value = str(control.stringValue()).strip()
                     if len(parts) == 2:
                         field = parts[1]
-                        if field == "allowed_bundle_ids":
+                        if field in {"allowed_bundle_ids", "allowed_accessibility_labels"}:
                             value = [item.strip() for item in value.split(",") if item.strip()]
                         elif field == "minimum_confidence":
                             value = float(value)
@@ -570,7 +547,6 @@ class CohelperApp(NSObject):
             self._start_clipboard_timer()
         self.advanced_window.orderOut_(None)
         self._set_status("cohelper")
-        self._sync_telegram_bridge()
 
     def _set_setup_complete(self, complete):
         state = SetupState.load()

@@ -72,12 +72,17 @@ class QuartzDesktopObserver:
 
 
 class QuartzPointerController:
+    def __init__(self, event_factory=CGEventCreateMouseEvent, event_post=CGEventPost):
+        self._event_factory = event_factory
+        self._event_post = event_post
+
     def click(self, point: ScreenPoint) -> None:
-        for event_type in (kCGEventLeftMouseDown, kCGEventLeftMouseUp):
-            event = CGEventCreateMouseEvent(None, event_type, (point.x, point.y), kCGMouseButtonLeft)
-            if event is None:
-                raise RuntimeError("failed to create Quartz mouse event")
-            CGEventPost(kCGHIDEventTap, event)
+        down = self._event_factory(None, kCGEventLeftMouseDown, (point.x, point.y), kCGMouseButtonLeft)
+        up = self._event_factory(None, kCGEventLeftMouseUp, (point.x, point.y), kCGMouseButtonLeft)
+        if down is None or up is None:
+            raise RuntimeError("failed to create complete Quartz mouse gesture")
+        self._event_post(kCGHIDEventTap, down)
+        self._event_post(kCGHIDEventTap, up)
 
 
 class MacAccessibilityInspector:
@@ -120,6 +125,14 @@ def annotate_target(screenshot: Screenshot, point: ScreenPoint, label: str) -> b
     radius = max(12, min(image.size) // 60)
     draw.ellipse((x - radius, y - radius, x + radius, y + radius), outline="red", width=max(3, radius // 4))
     draw.text((x + radius + 4, max(0, y - radius)), label, fill="red")
+    image.thumbnail((1280, 1280))
+    output = BytesIO()
+    image.save(output, "JPEG", quality=72, optimize=True)
+    return output.getvalue()
+
+
+def compress_screenshot(screenshot: Screenshot) -> bytes:
+    image = Image.open(BytesIO(screenshot.image)).convert("RGB")
     image.thumbnail((1280, 1280))
     output = BytesIO()
     image.save(output, "JPEG", quality=72, optimize=True)

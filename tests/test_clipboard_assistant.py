@@ -1,4 +1,9 @@
-from apps.clipboard_helper.service import ClipboardAssistant, ClipboardFeatures, ClipboardKind
+from apps.clipboard_helper.service import (
+    ClipboardAssistant,
+    ClipboardFeatures,
+    ClipboardKind,
+    route_clipboard_text,
+)
 
 
 class FakeTranslator:
@@ -66,3 +71,10 @@ def test_chinese_interrogative_without_question_mark_is_a_question():
 
     assert result.kind is ClipboardKind.QUESTION
     assert result.query == "为什么 Flink 需要 checkpoint"
+
+
+def test_paragraph_routes_to_source_grounded_summary():
+    route = route_clipboard_text("Flink 使用 checkpoint 保存一致性状态。它可以在故障后恢复。")
+
+    assert route.kind is ClipboardKind.PARAGRAPH
+    assert route.task == "summarize"

@@ -22,27 +22,36 @@
   parsing, and local-only Ollama client.
 - Added action lifecycle, application allowlist, sensitive-target rejection,
   Accessibility revalidation, expiry, and one-use confirmation.
+- Added exact safe-label allowlisting, confirmation-time screen digest and age
+  checks, collision-safe IDs, atomic token consumption, and complete-gesture
+  Quartz event creation.
 - Added Quartz capture/pointer adapters and in-memory preview annotation.
 - Added Telegram command handler and polling runtime without arbitrary execution.
+- Kept Telegram as a standalone manual process and added shutdown-on-config-change.
 - Added advanced configuration controls for vision, actions, and Telegram.
+- Wired missing-source responses and paragraph-specific summaries into the
+  production menu-bar coordinator; fixed answers to local `qwen3:8b`.
 
 ### Verified so far
 
 - Focused TDD tests: 15 passed.
-- Full suite after integration and concurrency repair: 54 passed.
+- Full suite after two-axis review repairs: 69 passed.
 - Editable package dependencies installed; `ApplicationServices` is available.
 - Current process reports Screen Recording and Accessibility permissions absent.
 - QMD status verified 194 documents and 5137 vectors; a real `qwen3:8b`
   grounded answer for "什么是 Flink？" completed from three local sources.
-- PyInstaller app build, DMG checksum verification, deep ad-hoc signature
-  verification, and local process launch passed.
+- `qwen2.5vl:7b` (6.0 GB) installed and a real local multimodal request returned
+  a schema-valid normalized target coordinate.
+- Rebuilt PyInstaller app and DMG after review repairs; DMG checksum/structure,
+  deep ad-hoc signature, version `0.1.0`, and local process launch passed. DMG
+  SHA-256: `06a542ea12c5e052de5d73a147871860f8246bd7cd632a663d8f1e7e1067437c`.
 
 ### Pending
 
-- Finish `qwen2.5vl:7b` download and run a real structured vision request.
 - Configure Telegram User ID and Keychain Token without reading Dofi secrets.
 - Grant `.app` Screen Recording and Accessibility permissions.
 - Run real preview-confirm-click-result acceptance.
 - Rebuild and verify `.app` and DMG.
-- Run two-axis code review, commit, and merge local `main` only after all live
-  acceptance criteria pass.
+- Re-run the two-axis code review after the safety repairs.
+- Commit the reviewed repairs; merge local `main` only after all live acceptance
+  criteria pass.
