@@ -370,7 +370,7 @@ class CohelperApp(NSObject):
         y = self._advanced_text(document, y, "vision.base_url", "Ollama URL", str(vision["base_url"]))
         y = self._advanced_text(document, y, "vision.timeout_seconds", "视觉超时（秒）", str(vision["timeout_seconds"]))
         y = self._advanced_text(document, y, "actions.allowed_bundle_ids", "允许的 Bundle ID（逗号分隔）", ",".join(actions["allowed_bundle_ids"]))
-        y = self._advanced_text(document, y, "actions.allowed_accessibility_labels", "安全 Accessibility 标题（逗号分隔）", ",".join(actions["allowed_accessibility_labels"]))
+        y = self._advanced_text(document, y, "actions.allowed_capabilities", "原生安全能力（逗号分隔）", ",".join(actions["allowed_capabilities"]))
         y = self._advanced_text(document, y, "actions.minimum_confidence", "最低视觉置信度", str(actions["minimum_confidence"]))
         y = self._advanced_text(document, y, "actions.screenshot_max_age_seconds", "截图最大时效（秒）", str(actions["screenshot_max_age_seconds"]))
         y = self._advanced_text(document, y, "actions.confirmation_ttl_seconds", "确认有效期（秒）", str(actions["confirmation_ttl_seconds"]))
@@ -509,7 +509,7 @@ class CohelperApp(NSObject):
                     value = str(control.stringValue()).strip()
                     if len(parts) == 2:
                         field = parts[1]
-                        if field in {"allowed_bundle_ids", "allowed_accessibility_labels"}:
+                        if field in {"allowed_bundle_ids", "allowed_capabilities"}:
                             value = [item.strip() for item in value.split(",") if item.strip()]
                         elif field == "minimum_confidence":
                             value = float(value)

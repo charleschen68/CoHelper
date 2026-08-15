@@ -54,11 +54,11 @@ actions:
   allowed_bundle_ids:
     - com.apple.Safari
     - com.apple.TextEdit
-  # Accessibility titles must exactly match this safe-operation allowlist.
-  allowed_accessibility_labels:
-    - 刷新按钮
-    - Reload this page
-    - Refresh
+  # bundle|role|title|required ancestor role|optional AX identifier
+  # Web content (AXWebArea) is always rejected even if its title matches.
+  allowed_capabilities:
+    - com.apple.Safari|AXButton|Reload this page|AXToolbar|
+    - com.apple.Safari|AXButton|刷新按钮|AXToolbar|
   minimum_confidence: 0.75
   screenshot_max_age_seconds: 5
   confirmation_ttl_seconds: 30

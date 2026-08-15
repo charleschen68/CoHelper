@@ -9,7 +9,7 @@ from io import BytesIO
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-from ai_drive.actions import ActionService
+from ai_drive.actions import AccessibilityCapability, ActionService
 from ai_drive.macos import MacAccessibilityInspector, QuartzDesktopObserver, QuartzPointerController, QuartzScreenCapture
 from ai_drive.vision import OllamaVisionClient, VisionAnalyzer
 from ai_drive.workflow import VisualClickWorkflow
@@ -41,7 +41,10 @@ def build_handler(config: Config) -> tuple[TelegramCommandHandler, int]:
         QuartzDesktopObserver(),
         QuartzPointerController(),
         allowed_bundle_ids=frozenset(actions["allowed_bundle_ids"]),
-        allowed_accessibility_labels=frozenset(actions["allowed_accessibility_labels"]),
+        allowed_capabilities=frozenset(
+            AccessibilityCapability(*str(value).split("|"))
+            for value in actions["allowed_capabilities"]
+        ),
         minimum_confidence=float(actions["minimum_confidence"]),
         screenshot_max_age=float(actions["screenshot_max_age_seconds"]),
         confirmation_ttl=float(actions["confirmation_ttl_seconds"]),
@@ -99,19 +102,10 @@ class TelegramRuntime:
         original_runtime_config = _runtime_config(self._config)
 
         async def post_init(application) -> None:
-            async def watch_config() -> None:
-                while True:
-                    await asyncio.sleep(1)
-                    try:
-                        current = Config.load()
-                    except Exception:
-                        application.stop_running()
-                        return
-                    if _runtime_config(current) != original_runtime_config:
-                        application.stop_running()
-                        return
-
-            application.create_task(watch_config(), name="ai-drive-config-watch")
+            application.create_task(
+                _watch_runtime_config(application, original_runtime_config),
+                name="ai-drive-config-watch",
+            )
 
         application = ApplicationBuilder().token(token).post_init(post_init).build()
         self._application = application
@@ -138,8 +132,28 @@ def _runtime_config(config: Config) -> tuple[object, ...]:
         telegram["credential_account"],
         tuple(sorted(vision.items())),
         tuple(actions["allowed_bundle_ids"]),
-        tuple(actions["allowed_accessibility_labels"]),
+        tuple(actions["allowed_capabilities"]),
         actions["minimum_confidence"],
         actions["screenshot_max_age_seconds"],
         actions["confirmation_ttl_seconds"],
     )
+
+
+async def _watch_runtime_config(
+    application,
+    original_runtime_config: tuple[object, ...],
+    *,
+    load_config=Config.load,
+    pause=asyncio.sleep,
+) -> None:
+    """Stop polling when security configuration changes or becomes unreadable."""
+    while True:
+        await pause(1)
+        try:
+            current = load_config()
+        except Exception:
+            application.stop_running()
+            return
+        if _runtime_config(current) != original_runtime_config:
+            application.stop_running()
+            return

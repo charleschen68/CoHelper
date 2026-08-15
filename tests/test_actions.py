@@ -7,7 +7,13 @@ from ai_drive.vision import NormalizedPoint, Screenshot, TargetCandidate
 
 class FakeInspector:
     def __init__(self):
-        self.target = AccessibleTarget(role="AXButton", title="刷新按钮", enabled=True)
+        self.target = AccessibleTarget(
+            role="AXButton",
+            title="刷新按钮",
+            enabled=True,
+            owner_bundle_id="com.apple.Safari",
+            ancestor_roles=("AXToolbar", "AXWindow"),
+        )
 
     def target_at(self, point):
         return self.target
@@ -71,12 +77,24 @@ def test_confirm_executes_once_for_bound_user_and_chat():
 
 class SensitiveInspector:
     def target_at(self, point):
-        return AccessibleTarget(role="AXButton", title="删除", enabled=True)
+        return AccessibleTarget(
+            role="AXButton",
+            title="删除",
+            enabled=True,
+            owner_bundle_id="com.apple.Safari",
+            ancestor_roles=("AXToolbar",),
+        )
 
 
 class EnglishReloadInspector:
     def target_at(self, point):
-        return AccessibleTarget(role="AXButton", title="Reload this page", enabled=True)
+        return AccessibleTarget(
+            role="AXButton",
+            title="Reload this page",
+            enabled=True,
+            owner_bundle_id="com.apple.Safari",
+            ancestor_roles=("AXToolbar",),
+        )
 
 
 def test_known_safe_bilingual_accessibility_label_can_match():
@@ -203,8 +221,14 @@ def test_wrong_user_or_chat_cannot_consume_an_action():
 @pytest.mark.parametrize(
     "changed",
     [
-        AccessibleTarget(role="AXStaticText", title="刷新按钮", enabled=True),
-        AccessibleTarget(role="AXButton", title="删除", enabled=True),
+        AccessibleTarget(
+            role="AXStaticText", title="刷新按钮", enabled=True,
+            owner_bundle_id="com.apple.Safari", ancestor_roles=("AXToolbar",)
+        ),
+        AccessibleTarget(
+            role="AXButton", title="删除", enabled=True,
+            owner_bundle_id="com.apple.Safari", ancestor_roles=("AXToolbar",)
+        ),
     ],
 )
 def test_confirmation_revalidates_role_and_sensitive_semantics(changed):
@@ -230,3 +254,47 @@ def test_action_identifier_collision_never_overwrites_another_users_action():
 
     with pytest.raises(ActionRejected, match="unique"):
         service.prepare_click(screenshot(), target, user_id=99, chat_id=8)
+
+
+def test_web_content_cannot_impersonate_allowlisted_browser_toolbar_action():
+    inspector = FakeInspector()
+    inspector.target = AccessibleTarget(
+        role="AXButton",
+        title="刷新按钮",
+        enabled=True,
+        owner_bundle_id="com.apple.Safari",
+        ancestor_roles=("AXWebArea", "AXGroup", "AXWindow"),
+    )
+    service = ActionService(
+        inspector, FakeDesktop(), FakePointer(), now=lambda: 100.0, id_factory=lambda: "A7K3"
+    )
+
+    with pytest.raises(ActionRejected, match="web-content"):
+        service.prepare_click(
+            screenshot(), TargetCandidate(NormalizedPoint(500, 500), 0.91, "刷新按钮"), user_id=42, chat_id=7
+        )
+
+
+def test_new_request_immediately_cancels_old_action_and_supersedes_slow_prepare():
+    service = ActionService(
+        FakeInspector(), FakeDesktop(), FakePointer(), now=lambda: 100.0,
+        id_factory=iter(("OLD", "NEW")).__next__,
+    )
+    target = TargetCandidate(NormalizedPoint(500, 500), 0.91, "刷新按钮")
+    old_prepare = service.begin_click(42)
+    service.prepare_click(
+        screenshot(), target, user_id=42, chat_id=7, preparation_id=old_prepare
+    )
+
+    new_prepare = service.begin_click(42)
+
+    with pytest.raises(ActionRejected, match="does not exist"):
+        service.confirm("OLD", user_id=42, chat_id=7, screenshot=screenshot())
+    with pytest.raises(ActionRejected, match="superseded"):
+        service.prepare_click(
+            screenshot(), target, user_id=42, chat_id=7, preparation_id=old_prepare
+        )
+    pending = service.prepare_click(
+        screenshot(), target, user_id=42, chat_id=7, preparation_id=new_prepare
+    )
+    assert pending.action_id == "NEW"

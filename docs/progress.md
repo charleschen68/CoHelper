@@ -25,6 +25,12 @@
 - Added exact safe-label allowlisting, confirmation-time screen digest and age
   checks, collision-safe IDs, atomic token consumption, and complete-gesture
   Quartz event creation.
+- Replaced the label-only rule with native capability matching (owner bundle,
+  role, title, hierarchy, optional identifier) and unconditional web-content
+  rejection.
+- Added post-inference recapture and request generations so cold model loading
+  cannot stale the actionable capture and concurrent requests cannot reactivate
+  an older action.
 - Added Quartz capture/pointer adapters and in-memory preview annotation.
 - Added Telegram command handler and polling runtime without arbitrary execution.
 - Kept Telegram as a standalone manual process and added shutdown-on-config-change.
@@ -35,23 +41,25 @@
 ### Verified so far
 
 - Focused TDD tests: 15 passed.
-- Full suite after two-axis review repairs: 69 passed.
+- Full suite after second-round review repairs: 77 passed.
 - Editable package dependencies installed; `ApplicationServices` is available.
-- Current process reports Screen Recording and Accessibility permissions absent.
+- Current development runtime reports Screen Recording and Accessibility
+  permissions available; the rebuilt `.app` identity still needs to exercise
+  them in the live Telegram click loop.
 - QMD status verified 194 documents and 5137 vectors; a real `qwen3:8b`
   grounded answer for "什么是 Flink？" completed from three local sources.
 - `qwen2.5vl:7b` (6.0 GB) installed and a real local multimodal request returned
   a schema-valid normalized target coordinate.
 - Rebuilt PyInstaller app and DMG after review repairs; DMG checksum/structure,
   deep ad-hoc signature, version `0.1.0`, and local process launch passed. DMG
-  SHA-256: `06a542ea12c5e052de5d73a147871860f8246bd7cd632a663d8f1e7e1067437c`.
+  SHA-256: `27989faacd1f49eea5bfd80e99c54d62b6809d33e40e55d66de0688a2288892c`.
 
 ### Pending
 
 - Configure Telegram User ID and Keychain Token without reading Dofi secrets.
 - Grant `.app` Screen Recording and Accessibility permissions.
 - Run real preview-confirm-click-result acceptance.
-- Rebuild and verify `.app` and DMG.
-- Re-run the two-axis code review after the safety repairs.
+- Rebuild and verify `.app` and DMG after the second-round safety repairs.
+- Re-run the two-axis code review after those repairs.
 - Commit the reviewed repairs; merge local `main` only after all live acceptance
   criteria pass.

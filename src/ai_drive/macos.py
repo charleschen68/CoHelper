@@ -11,14 +11,23 @@ from ApplicationServices import (
     AXUIElementCopyAttributeValue,
     AXUIElementCopyElementAtPosition,
     AXUIElementCreateSystemWide,
+    AXUIElementGetPid,
     kAXEnabledAttribute,
     kAXDescriptionAttribute,
     kAXHelpAttribute,
+    kAXIdentifierAttribute,
+    kAXParentAttribute,
     kAXRoleAttribute,
     kAXTitleAttribute,
     kAXTrustedCheckOptionPrompt,
 )
-from Cocoa import NSBitmapImageFileTypeJPEG, NSBitmapImageRep, NSImageCompressionFactor, NSWorkspace
+from Cocoa import (
+    NSBitmapImageFileTypeJPEG,
+    NSBitmapImageRep,
+    NSImageCompressionFactor,
+    NSRunningApplication,
+    NSWorkspace,
+)
 from PIL import Image, ImageDraw
 from Quartz import (
     CGDisplayBounds,
@@ -107,12 +116,40 @@ class MacAccessibilityInspector:
             or self._attribute(element, kAXHelpAttribute)
         )
         enabled = self._attribute(element, kAXEnabledAttribute)
-        return AccessibleTarget(str(role or ""), str(title or ""), bool(enabled))
+        identifier = self._attribute(element, kAXIdentifierAttribute)
+        pid_error, pid = AXUIElementGetPid(element, None)
+        owner_bundle_id = ""
+        if pid_error == 0:
+            application = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+            if application is not None:
+                owner_bundle_id = str(application.bundleIdentifier() or "")
+        return AccessibleTarget(
+            str(role or ""),
+            str(title or ""),
+            bool(enabled),
+            owner_bundle_id,
+            str(identifier or ""),
+            self._ancestor_roles(element),
+        )
 
     @staticmethod
     def _attribute(element, attribute):
         error, value = AXUIElementCopyAttributeValue(element, attribute, None)
         return value if error == 0 else None
+
+    @classmethod
+    def _ancestor_roles(cls, element) -> tuple[str, ...]:
+        roles = []
+        current = element
+        for _ in range(16):
+            parent = cls._attribute(current, kAXParentAttribute)
+            if parent is None:
+                break
+            role = cls._attribute(parent, kAXRoleAttribute)
+            if role:
+                roles.append(str(role))
+            current = parent
+        return tuple(roles)
 
 
 def annotate_target(screenshot: Screenshot, point: ScreenPoint, label: str) -> bytes:

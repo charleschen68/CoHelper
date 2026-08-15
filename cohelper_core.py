@@ -40,7 +40,10 @@ DEFAULT_CONFIG = {
     "vision": {"model": "qwen2.5vl:7b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 90},
     "actions": {
         "allowed_bundle_ids": ["com.apple.Safari", "com.apple.TextEdit"],
-        "allowed_accessibility_labels": ["刷新按钮", "Reload this page", "Refresh"],
+        "allowed_capabilities": [
+            "com.apple.Safari|AXButton|Reload this page|AXToolbar|",
+            "com.apple.Safari|AXButton|刷新按钮|AXToolbar|",
+        ],
         "minimum_confidence": 0.75,
         "screenshot_max_age_seconds": 5,
         "confirmation_ttl_seconds": 30,
@@ -138,18 +141,20 @@ class Config:
         vision_url = urlparse(str(vision.get("base_url", "")))
         if vision_url.hostname not in {"127.0.0.1", "localhost", "::1"}:
             raise ConfigError("vision.base_url 必须是本机 Ollama 地址")
-        if not str(vision.get("model", "")).strip():
-            raise ConfigError("vision.model 不能为空")
+        if vision.get("model") != "qwen2.5vl:7b":
+            raise ConfigError("vision.model 必须是 qwen2.5vl:7b")
         allowed = self.values["actions"].get("allowed_bundle_ids")
         if not isinstance(allowed, list) or not allowed or not all(isinstance(item, str) and item for item in allowed):
             raise ConfigError("actions.allowed_bundle_ids 必须是非空字符串列表")
-        allowed_labels = self.values["actions"].get("allowed_accessibility_labels")
+        allowed_capabilities = self.values["actions"].get("allowed_capabilities")
         if (
-            not isinstance(allowed_labels, list)
-            or not allowed_labels
-            or not all(isinstance(item, str) and item.strip() for item in allowed_labels)
+            not isinstance(allowed_capabilities, list)
+            or not allowed_capabilities
+            or not all(_valid_capability(item) for item in allowed_capabilities)
         ):
-            raise ConfigError("actions.allowed_accessibility_labels 必须是非空字符串列表")
+            raise ConfigError(
+                "actions.allowed_capabilities 必须使用 bundle|role|title|ancestor_role|identifier 格式"
+            )
         actions = self.values["actions"]
         try:
             confidence = float(actions["minimum_confidence"])
@@ -161,8 +166,10 @@ class Config:
             raise ConfigError(f"AI Drive 数值配置无效：{exc}") from exc
         if not 0 <= confidence <= 1:
             raise ConfigError("actions.minimum_confidence 必须在 0 到 1 之间")
-        if screenshot_age <= 0 or confirmation_ttl <= 0 or vision_timeout <= 0:
+        if screenshot_age <= 0 or vision_timeout <= 0:
             raise ConfigError("视觉与动作超时必须大于 0")
+        if confirmation_ttl != 30:
+            raise ConfigError("actions.confirmation_ttl_seconds 必须固定为 30")
         if allowed_user_id < 0 or (self.values["telegram"]["enabled"] and allowed_user_id == 0):
             raise ConfigError("启用 Telegram 时 telegram.allowed_user_id 必须为正整数")
 
@@ -171,6 +178,13 @@ class Config:
 
     def section(self, name: str) -> dict[str, Any]:
         return self.values[name]
+
+
+def _valid_capability(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    parts = value.split("|")
+    return len(parts) == 5 and all(part.strip() for part in parts[:4])
 
 
 def _migrate_config(values: dict[str, Any]) -> dict[str, Any]:

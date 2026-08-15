@@ -1,4 +1,5 @@
 from .service import (
+    AccessibilityCapability,
     AccessibleTarget,
     ActionRejected,
     ActionResult,
@@ -8,6 +9,7 @@ from .service import (
 )
 
 __all__ = [
+    "AccessibilityCapability",
     "AccessibleTarget",
     "ActionRejected",
     "ActionResult",

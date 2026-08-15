@@ -1,7 +1,8 @@
 from dataclasses import dataclass
+import asyncio
 
 from apps.telegram_bridge.service import TelegramCommandHandler
-from apps.telegram_bridge.runtime import _runtime_config
+from apps.telegram_bridge.runtime import _runtime_config, _watch_runtime_config
 from cohelper_core import Config
 
 
@@ -60,3 +61,57 @@ def test_runtime_config_changes_when_bridge_is_disabled_or_identity_changes():
 
     assert _runtime_config(original) != _runtime_config(disabled)
     assert _runtime_config(original) != _runtime_config(another_user)
+
+
+def test_runtime_watcher_stops_polling_when_config_changes():
+    original = Config({"telegram": {"enabled": True, "allowed_user_id": 42}})
+    changed = Config({"telegram": {"enabled": False, "allowed_user_id": 42}})
+
+    class Application:
+        stopped = False
+
+        def stop_running(self):
+            self.stopped = True
+
+    async def no_wait(seconds):
+        assert seconds == 1
+
+    application = Application()
+    asyncio.run(
+        _watch_runtime_config(
+            application,
+            _runtime_config(original),
+            load_config=lambda: changed,
+            pause=no_wait,
+        )
+    )
+
+    assert application.stopped
+
+
+def test_runtime_watcher_stops_when_configuration_cannot_be_loaded():
+    original = Config({"telegram": {"enabled": True, "allowed_user_id": 42}})
+
+    class Application:
+        stopped = False
+
+        def stop_running(self):
+            self.stopped = True
+
+    async def no_wait(seconds):
+        pass
+
+    def fail_load():
+        raise OSError("unreadable")
+
+    application = Application()
+    asyncio.run(
+        _watch_runtime_config(
+            application,
+            _runtime_config(original),
+            load_config=fail_load,
+            pause=no_wait,
+        )
+    )
+
+    assert application.stopped

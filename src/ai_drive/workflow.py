@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Protocol
 
-from ai_drive.actions import ActionService
+from ai_drive.actions import ActionRejected, ActionService
 from ai_drive.macos import annotate_target, compress_screenshot
 from ai_drive.vision import Screenshot, VisionAnalyzer
 
@@ -27,10 +28,24 @@ class VisualClickWorkflow:
         self._actions = actions
 
     def prepare(self, instruction: str, user_id: int, chat_id: int) -> PreparedVisualClick:
+        preparation_id = self._actions.begin_click(user_id)
         screenshot = self._capture.capture_main_display()
         target = self._analyzer.locate(screenshot, instruction)
-        pending = self._actions.prepare_click(screenshot, target, user_id=user_id, chat_id=chat_id)
-        preview = annotate_target(screenshot, pending.point, pending.accessible_title)
+        verification = self._capture.capture_main_display()
+        if (
+            verification.display_id != screenshot.display_id
+            or verification.frontmost_bundle_id != screenshot.frontmost_bundle_id
+            or sha256(verification.image).digest() != sha256(screenshot.image).digest()
+        ):
+            raise ActionRejected("screen changed during visual analysis")
+        pending = self._actions.prepare_click(
+            verification,
+            target,
+            user_id=user_id,
+            chat_id=chat_id,
+            preparation_id=preparation_id,
+        )
+        preview = annotate_target(verification, pending.point, pending.accessible_title)
         return PreparedVisualClick(pending.action_id, preview)
 
     def confirm(self, action_id: str, user_id: int, chat_id: int) -> bytes:

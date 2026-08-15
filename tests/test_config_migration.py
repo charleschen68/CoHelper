@@ -16,7 +16,7 @@ def test_ai_drive_defaults_are_local_and_safely_allowlisted():
     assert config.section("vision")["model"] == "qwen2.5vl:7b"
     assert config.section("summary")["model"] == "qwen3:8b"
     assert config.section("actions")["allowed_bundle_ids"] == ["com.apple.Safari", "com.apple.TextEdit"]
-    assert "Reload this page" in config.section("actions")["allowed_accessibility_labels"]
+    assert any("Reload this page" in item for item in config.section("actions")["allowed_capabilities"])
     assert config.section("telegram")["enabled"] is False
 
 
@@ -44,3 +44,10 @@ def test_action_safety_thresholds_are_validated():
 def test_answer_model_is_fixed_to_local_qwen3(summary):
     with pytest.raises(ConfigError, match="summary"):
         Config({"summary": summary})
+
+
+def test_vision_model_and_confirmation_ttl_are_fixed():
+    with pytest.raises(ConfigError, match="qwen2.5vl:7b"):
+        Config({"vision": {"model": "another-model"}})
+    with pytest.raises(ConfigError, match="固定为 30"):
+        Config({"actions": {"confirmation_ttl_seconds": 31}})
