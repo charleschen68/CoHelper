@@ -246,15 +246,20 @@ class EnvironmentDoctor:
         if features.get("translation") and self._section("translation").get("provider") == "ollama":
             section = self._section("translation")
             required.setdefault(str(section.get("base_url", "http://127.0.0.1:11434")), set()).add(str(section["model"]))
-        if features.get("knowledge_summary") and self._section("summary").get("provider") == "ollama":
+        knowledge_answer = features.get("knowledge_answer", features.get("knowledge_summary"))
+        if knowledge_answer and self._section("summary").get("provider") == "ollama":
             section = self._section("summary")
+            required.setdefault(str(section.get("base_url", "http://127.0.0.1:11434")), set()).add(str(section["model"]))
+        if self._section("telegram").get("enabled"):
+            section = self._section("vision")
             required.setdefault(str(section.get("base_url", "http://127.0.0.1:11434")), set()).add(str(section["model"]))
         return required
 
     def _openai_compatible_checks(self) -> list[CheckResult]:
         checks = []
         features = self._section("features")
-        enabled = {"translation": features.get("translation"), "summary": features.get("knowledge_summary")}
+        knowledge_answer = features.get("knowledge_answer", features.get("knowledge_summary"))
+        enabled = {"translation": features.get("translation"), "summary": knowledge_answer}
         privacy = self._section("privacy")
         for kind, is_enabled in enabled.items():
             section = self._section(kind)

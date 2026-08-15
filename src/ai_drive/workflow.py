@@ -1,0 +1,41 @@
+"""End-to-end visual click workflow used by local interfaces."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Protocol
+
+from ai_drive.actions import ActionService
+from ai_drive.macos import annotate_target
+from ai_drive.vision import Screenshot, VisionAnalyzer
+
+
+class ScreenCapture(Protocol):
+    def capture_main_display(self) -> Screenshot: ...
+
+
+@dataclass(frozen=True)
+class PreparedVisualClick:
+    action_id: str
+    preview: bytes
+
+
+class VisualClickWorkflow:
+    def __init__(self, capture: ScreenCapture, analyzer: VisionAnalyzer, actions: ActionService):
+        self._capture = capture
+        self._analyzer = analyzer
+        self._actions = actions
+
+    def prepare(self, instruction: str, user_id: int, chat_id: int) -> PreparedVisualClick:
+        screenshot = self._capture.capture_main_display()
+        target = self._analyzer.locate(screenshot, instruction)
+        pending = self._actions.prepare_click(screenshot, target, user_id=user_id, chat_id=chat_id)
+        preview = annotate_target(screenshot, pending.point, pending.accessible_title)
+        return PreparedVisualClick(pending.action_id, preview)
+
+    def confirm(self, action_id: str, user_id: int, chat_id: int) -> bytes:
+        self._actions.confirm(action_id, user_id=user_id, chat_id=chat_id)
+        return self._capture.capture_main_display().image
+
+    def cancel(self, action_id: str, user_id: int, chat_id: int) -> None:
+        self._actions.cancel(action_id, user_id=user_id, chat_id=chat_id)

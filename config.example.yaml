@@ -1,7 +1,7 @@
 features:
   translation: true
   knowledge_search: true
-  knowledge_summary: true
+  knowledge_answer: true
 
 privacy:
   allow_external_api: false
@@ -40,7 +40,25 @@ translation:
 
 summary:
   provider: ollama
-  model: rafw007/qwen3.6-35b-A3b-mlx-claude-coder-abliterated:latest
+  model: qwen3:8b
   base_url: http://127.0.0.1:11434
   timeout_seconds: 120
   credential_account: summary
+
+vision:
+  model: qwen2.5vl:7b
+  base_url: http://127.0.0.1:11434
+  timeout_seconds: 90
+
+actions:
+  allowed_bundle_ids:
+    - com.apple.Safari
+    - com.apple.TextEdit
+  minimum_confidence: 0.75
+  screenshot_max_age_seconds: 5
+  confirmation_ttl_seconds: 30
+
+telegram:
+  enabled: false
+  allowed_user_id: 0
+  credential_account: telegram

@@ -1,11 +1,19 @@
 # PyInstaller specification for an Apple Silicon menu-bar .app.
 from PyInstaller.utils.hooks import collect_submodules
 
-hidden_imports = collect_submodules("Cocoa") + collect_submodules("PyObjCTools")
+hidden_imports = (
+    collect_submodules("Cocoa")
+    + collect_submodules("PyObjCTools")
+    + collect_submodules("ApplicationServices")
+    + collect_submodules("PIL")
+    + collect_submodules("telegram")
+    + collect_submodules("ai_drive")
+    + collect_submodules("apps.telegram_bridge")
+)
 
 a = Analysis(
     ["cohelper.py"],
-    pathex=[],
+    pathex=["src", "."],
     binaries=[],
     datas=[("config.example.yaml", ".")],
     hiddenimports=hidden_imports,

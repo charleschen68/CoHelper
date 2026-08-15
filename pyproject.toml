@@ -9,19 +9,41 @@ description = "macOS clipboard translation and local QMD knowledge helper"
 requires-python = ">=3.11"
 dependencies = [
   "pyobjc-framework-Cocoa>=12.0",
+  "pyobjc-framework-Quartz>=12.0",
+  "pyobjc-framework-ApplicationServices>=12.0",
+  "Pillow>=11.0",
   "PyYAML>=6.0",
+  "python-telegram-bot>=22,<23",
   "requests>=2.31",
 ]
 
 [project.scripts]
 cohelper = "cohelper_app:run"
+ai-drive-telegram = "apps.telegram_bridge.runtime:run"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pyinstaller>=6"]
 
 [tool.setuptools]
 py-modules = ["cohelper", "cohelper_app", "cohelper_core", "cohelper_setup"]
+packages = [
+  "ai_drive",
+  "ai_drive.actions",
+  "ai_drive.vision",
+  "apps",
+  "apps.clipboard_helper",
+  "apps.telegram_bridge",
+]
+
+[tool.setuptools.package-dir]
+ai_drive = "src/ai_drive"
+"ai_drive.actions" = "src/ai_drive/actions"
+"ai_drive.vision" = "src/ai_drive/vision"
+apps = "apps"
+"apps.clipboard_helper" = "apps/clipboard_helper"
+"apps.telegram_bridge" = "apps/telegram_bridge"
 
 [tool.pytest.ini_options]
 testpaths = ["."]
 python_files = ["test_*.py"]
+pythonpath = ["src", "."]

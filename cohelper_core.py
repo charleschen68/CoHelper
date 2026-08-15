@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
+from apps.clipboard_helper.service import ClipboardKind, classify_clipboard_text
 from cohelper_setup import EnvironmentDoctor, KeychainStore, resolve_command
 
 
@@ -29,13 +30,21 @@ CONFIG_PATH = APP_SUPPORT / "config.yaml"
 
 
 DEFAULT_CONFIG = {
-    "features": {"translation": True, "knowledge_search": True, "knowledge_summary": True},
+    "features": {"translation": True, "knowledge_search": True, "knowledge_answer": True},
     "privacy": {"allow_external_api": False},
     "clipboard": {"min_chars": 3, "max_chars": 20000, "poll_interval_ms": 400, "debounce_ms": 500, "process_plain_text_only": True},
     "knowledge": {"collection": "jarvis-wiki", "source_path": "", "limit": 5, "query_timeout_seconds": 20, "max_summary_source_chars": 50000},
     "translation": {"provider": "ollama", "model": "translategemma:4b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 60, "credential_account": "translation"},
-    "summary": {"provider": "ollama", "model": "rafw007/qwen3.6-35b-A3b-mlx-claude-coder-abliterated:latest", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 120, "credential_account": "summary"},
+    "summary": {"provider": "ollama", "model": "qwen3:8b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 120, "credential_account": "summary"},
     "qmd": {"command": "qmd", "index": "index", "no_rerank": False, "models": {"embedding": "", "reranking": "", "generation": ""}},
+    "vision": {"model": "qwen2.5vl:7b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 90},
+    "actions": {
+        "allowed_bundle_ids": ["com.apple.Safari", "com.apple.TextEdit"],
+        "minimum_confidence": 0.75,
+        "screenshot_max_age_seconds": 5,
+        "confirmation_ttl_seconds": 30,
+    },
+    "telegram": {"enabled": False, "allowed_user_id": 0, "credential_account": "telegram"},
 }
 
 
@@ -55,7 +64,8 @@ class ConfigError(ValueError):
 
 class Config:
     def __init__(self, values: dict[str, Any]):
-        self.values = _deep_merge(DEFAULT_CONFIG, values)
+        migrated = _migrate_config(values)
+        self.values = _deep_merge(DEFAULT_CONFIG, migrated)
         self._validate()
 
     @classmethod
@@ -82,7 +92,7 @@ class Config:
         os.replace(temporary, path)
 
     def _validate(self) -> None:
-        for section_name in ("features", "privacy", "clipboard", "knowledge", "translation", "summary", "qmd"):
+        for section_name in ("features", "privacy", "clipboard", "knowledge", "translation", "summary", "qmd", "vision", "actions", "telegram"):
             if not isinstance(self.values.get(section_name), dict):
                 raise ConfigError(f"{section_name} 必须是 mapping")
         clipboard = self.values["clipboard"]
@@ -105,8 +115,8 @@ class Config:
             raise ConfigError("knowledge.limit 必须大于 0")
         if max_source_chars < 1000:
             raise ConfigError("knowledge.max_summary_source_chars 不能小于 1000")
-        if self.values["features"].get("knowledge_summary") and not self.values["features"].get("knowledge_search"):
-            raise ConfigError("knowledge_summary 依赖 knowledge_search")
+        if self.values["features"].get("knowledge_answer") and not self.values["features"].get("knowledge_search"):
+            raise ConfigError("knowledge_answer 依赖 knowledge_search")
         for section_name in ("translation", "summary"):
             section = self.values[section_name]
             if section.get("provider") not in {"ollama", "openai-compatible"}:
@@ -115,12 +125,49 @@ class Config:
                 raise ConfigError(f"{section_name}.model 不能为空")
             if not urlparse(str(section.get("base_url", ""))).scheme:
                 raise ConfigError(f"{section_name}.base_url 必须是完整 URL")
+        vision = self.values["vision"]
+        vision_url = urlparse(str(vision.get("base_url", "")))
+        if vision_url.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            raise ConfigError("vision.base_url 必须是本机 Ollama 地址")
+        if not str(vision.get("model", "")).strip():
+            raise ConfigError("vision.model 不能为空")
+        allowed = self.values["actions"].get("allowed_bundle_ids")
+        if not isinstance(allowed, list) or not allowed or not all(isinstance(item, str) and item for item in allowed):
+            raise ConfigError("actions.allowed_bundle_ids 必须是非空字符串列表")
+        actions = self.values["actions"]
+        try:
+            confidence = float(actions["minimum_confidence"])
+            screenshot_age = float(actions["screenshot_max_age_seconds"])
+            confirmation_ttl = float(actions["confirmation_ttl_seconds"])
+            vision_timeout = int(vision["timeout_seconds"])
+            allowed_user_id = int(self.values["telegram"]["allowed_user_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ConfigError(f"AI Drive 数值配置无效：{exc}") from exc
+        if not 0 <= confidence <= 1:
+            raise ConfigError("actions.minimum_confidence 必须在 0 到 1 之间")
+        if screenshot_age <= 0 or confirmation_ttl <= 0 or vision_timeout <= 0:
+            raise ConfigError("视觉与动作超时必须大于 0")
+        if allowed_user_id < 0 or (self.values["telegram"]["enabled"] and allowed_user_id == 0):
+            raise ConfigError("启用 Telegram 时 telegram.allowed_user_id 必须为正整数")
 
     def enabled(self, feature: str) -> bool:
         return bool(self.values["features"].get(feature, False))
 
     def section(self, name: str) -> dict[str, Any]:
         return self.values[name]
+
+
+def _migrate_config(values: dict[str, Any]) -> dict[str, Any]:
+    migrated = _deep_merge({}, values)
+    features = migrated.get("features")
+    if isinstance(features, dict) and "knowledge_summary" in features:
+        features.setdefault("knowledge_answer", features["knowledge_summary"])
+        del features["knowledge_summary"]
+    summary = migrated.get("summary")
+    previous_default = "rafw007/qwen3.6-35b-A3b-mlx-claude-coder-abliterated:latest"
+    if isinstance(summary, dict) and summary.get("model") == previous_default:
+        summary["model"] = "qwen3:8b"
+    return migrated
 
 
 SECRET_PATTERNS = (
@@ -228,7 +275,7 @@ class ModelService:
     def run(self, prompt: str, system: str, cancel: threading.Event | None = None) -> ModelResult:
         if self.kind == "translation" and not self.config.enabled("translation"):
             return ModelResult(provider="disabled")
-        if self.kind == "summary" and not self.config.enabled("knowledge_summary"):
+        if self.kind == "summary" and not self.config.enabled("knowledge_answer"):
             return ModelResult(provider="disabled")
         started = time.monotonic()
         try:
@@ -459,18 +506,20 @@ class TaskCoordinator:
 
     def _knowledge(self, generation: int, text: str, cancel: threading.Event) -> None:
         try:
+            kind = classify_clipboard_text(text)
+            query = f"什么是 {text.strip()}？" if kind is ClipboardKind.TERM else text.strip()
             qmd = QmdClient(self.config)
-            hits = qmd.search(text, cancel)
+            hits = qmd.search(query, cancel)
             if self._current(generation, cancel):
                 self.callbacks.on_knowledge(hits)
-            if not self.config.enabled("knowledge_summary") or not hits or not self._current(generation, cancel):
+            if not self.config.enabled("knowledge_answer") or not hits or not self._current(generation, cancel):
                 return
             documents = [(hit, qmd.get(hit, cancel)) for hit in hits]
             if self._external_blocked(text, "summary"):
                 result = ModelResult(error="外部 API 被隐私策略阻止", provider="blocked")
             else:
                 prompt = build_knowledge_prompt(
-                    text,
+                    query,
                     documents,
                     int(self.config.section("knowledge")["max_summary_source_chars"]),
                 )

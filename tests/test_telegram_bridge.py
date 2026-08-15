@@ -1,0 +1,51 @@
+from dataclasses import dataclass
+
+from apps.telegram_bridge.service import TelegramCommandHandler
+
+
+@dataclass
+class Prepared:
+    action_id: str = "A7K3"
+    preview: bytes = b"preview"
+
+
+class FakeWorkflow:
+    def __init__(self):
+        self.prepared = []
+
+    def prepare(self, instruction, user_id, chat_id):
+        self.prepared.append((instruction, user_id, chat_id))
+        return Prepared()
+
+    def confirm(self, action_id, user_id, chat_id):
+        return b"result"
+
+    def cancel(self, action_id, user_id, chat_id):
+        return None
+
+
+class FakeChat:
+    def answer(self, text):
+        return f"chat:{text}"
+
+
+def test_click_command_returns_bound_confirmation_protocol():
+    workflow = FakeWorkflow()
+    handler = TelegramCommandHandler(workflow, FakeChat())
+
+    reply = handler.handle("/click Safari 的刷新按钮", user_id=42, chat_id=7)
+
+    assert workflow.prepared == [("Safari 的刷新按钮", 42, 7)]
+    assert reply.image == b"preview"
+    assert "/confirm A7K3" in reply.text
+    assert "/cancel A7K3" in reply.text
+
+
+def test_ordinary_message_never_enters_action_workflow():
+    workflow = FakeWorkflow()
+    handler = TelegramCommandHandler(workflow, FakeChat())
+
+    reply = handler.handle("点击刷新按钮", user_id=42, chat_id=7)
+
+    assert reply.text == "chat:点击刷新按钮"
+    assert workflow.prepared == []

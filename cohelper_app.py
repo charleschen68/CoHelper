@@ -75,6 +75,8 @@ class CohelperApp(NSObject):
         self.status_item: NSStatusItem | None = None
         self.setup_installer = None
         self.setup_thread = None
+        self.telegram_thread = None
+        self.telegram_runtime = None
         return self
 
     def applicationDidFinishLaunching_(self, notification):
@@ -89,13 +91,36 @@ class CohelperApp(NSObject):
             if not CONFIG_PATH.exists():
                 self.config.save()
             self.runDiagnostics_(None)
+        self._sync_telegram_bridge()
+
+    def _sync_telegram_bridge(self):
+        if not self.config.section("telegram")["enabled"]:
+            if self.telegram_runtime is not None:
+                self.telegram_runtime.stop()
+                self.telegram_runtime = None
+            return
+        if self.telegram_thread and self.telegram_thread.is_alive():
+            return
+
+        def worker():
+            try:
+                from apps.telegram_bridge.runtime import TelegramRuntime
+
+                runtime = TelegramRuntime(self.config)
+                self.telegram_runtime = runtime
+                runtime.run(stop_signals=None)
+            except Exception as exc:
+                AppHelper.callAfter(self._show_error, "Telegram Bridge 启动失败", f"{type(exc).__name__}: {exc}")
+
+        self.telegram_thread = threading.Thread(target=worker, daemon=True, name="ai-drive-telegram")
+        self.telegram_thread.start()
 
     def _callbacks(self):
         return TaskCallbacks(
             on_started=lambda text: AppHelper.callAfter(self._show_started, text),
             on_translation=lambda result: AppHelper.callAfter(self._append_result, "翻译", result.text or result.error),
             on_knowledge=lambda hits: AppHelper.callAfter(self._append_sources, hits),
-            on_summary=lambda result: AppHelper.callAfter(self._append_result, "知识总结", result.text or result.error),
+            on_summary=lambda result: AppHelper.callAfter(self._append_result, "知识回答 / 总结", result.text or result.error),
             on_error=lambda error: AppHelper.callAfter(self._append_result, "错误", error),
             on_rejected=lambda reason: AppHelper.callAfter(self._show_rejected, reason),
             on_finished=lambda: AppHelper.callAfter(self._set_status, "cohelper"),
@@ -109,11 +134,29 @@ class CohelperApp(NSObject):
         menu.addItemWithTitle_action_keyEquivalent_("环境诊断与设置", "runDiagnostics:", "")
         menu.addItemWithTitle_action_keyEquivalent_("模型设置", "configureModels:", "")
         menu.addItemWithTitle_action_keyEquivalent_("高级配置", "configureAdvanced:", "")
+        menu.addItemWithTitle_action_keyEquivalent_("请求视觉操作权限", "requestVisionPermissions:", "")
         menu.addItemWithTitle_action_keyEquivalent_("取消环境设置", "cancelSetup:", "")
         menu.addItemWithTitle_action_keyEquivalent_("打开配置目录", "openConfig:", "")
         menu.addItem_(NSMenuItem.separatorItem())
         menu.addItemWithTitle_action_keyEquivalent_("退出", "terminate:", "q")
         self.status_item.setMenu_(menu)
+
+    def requestVisionPermissions_(self, sender):
+        try:
+            from ai_drive.macos import MacAccessibilityInspector, QuartzScreenCapture
+
+            screen = QuartzScreenCapture()
+            accessibility = MacAccessibilityInspector()
+            if not screen.has_permission():
+                screen.request_permission()
+            if not accessibility.has_permission():
+                accessibility.request_permission()
+            self._show_info(
+                "视觉操作权限",
+                "已请求“屏幕录制”和“辅助功能”权限。请在系统设置中允许 cohelper，然后完全退出并重新打开应用。",
+            )
+        except Exception as exc:
+            self._show_error("无法请求视觉操作权限", f"{type(exc).__name__}: {exc}")
 
     def _start_clipboard_timer(self):
         interval = int(self.config.section("clipboard")["poll_interval_ms"]) / 1000
@@ -300,14 +343,14 @@ class CohelperApp(NSObject):
         scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(16, 64, 688, 696))
         scroll.setHasVerticalScroller_(True)
         scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
-        document = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 660, 1420))
+        document = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 660, 1880))
         scroll.setDocumentView_(document)
         self.advanced_window.contentView().addSubview_(scroll)
         self._advanced_document = document
 
-        y = 1380
+        y = 1840
         y = self._advanced_section(document, y, "运行模块", "控制剪贴板内容会经过哪些处理，以及是否允许访问外部 API。")
-        for key, title in (("translation", "启用翻译"), ("knowledge_search", "启用知识库检索"), ("knowledge_summary", "启用知识总结")):
+        for key, title in (("translation", "启用翻译"), ("knowledge_search", "启用知识库检索"), ("knowledge_answer", "启用知识回答/总结")):
             y = self._advanced_switch(document, y, key, title, self.config.enabled(key))
         y = self._advanced_switch(document, y, "allow_external_api", "允许外部 API（默认关闭）", bool(self.config.section("privacy")["allow_external_api"]))
 
@@ -343,9 +386,29 @@ class CohelperApp(NSObject):
             y = self._advanced_text(document, y, f"{kind}.credential_account", "Keychain Account", str(section.get("credential_account", kind)))
             y = self._advanced_secret(document, y, f"{kind}.api_key", "API Key（留空不修改）")
 
+        y -= 12
+        y = self._advanced_section(document, y, "视觉与操作", "视觉模型仅允许本机 Ollama；操作只允许白名单应用中的单次确认点击。")
+        vision = self.config.section("vision")
+        actions = self.config.section("actions")
+        y = self._advanced_text(document, y, "vision.model", "视觉模型", str(vision["model"]))
+        y = self._advanced_text(document, y, "vision.base_url", "Ollama URL", str(vision["base_url"]))
+        y = self._advanced_text(document, y, "vision.timeout_seconds", "视觉超时（秒）", str(vision["timeout_seconds"]))
+        y = self._advanced_text(document, y, "actions.allowed_bundle_ids", "允许的 Bundle ID（逗号分隔）", ",".join(actions["allowed_bundle_ids"]))
+        y = self._advanced_text(document, y, "actions.minimum_confidence", "最低视觉置信度", str(actions["minimum_confidence"]))
+        y = self._advanced_text(document, y, "actions.screenshot_max_age_seconds", "截图最大时效（秒）", str(actions["screenshot_max_age_seconds"]))
+        y = self._advanced_text(document, y, "actions.confirmation_ttl_seconds", "确认有效期（秒）", str(actions["confirmation_ttl_seconds"]))
+
+        y -= 12
+        y = self._advanced_section(document, y, "Telegram Bridge", "Token 只保存到 macOS Keychain；启用后使用 ai-drive-telegram 启动。")
+        telegram = self.config.section("telegram")
+        y = self._advanced_switch(document, y, "telegram.enabled", "启用 Telegram Bridge", bool(telegram["enabled"]))
+        y = self._advanced_text(document, y, "telegram.allowed_user_id", "允许的 Telegram User ID", str(telegram["allowed_user_id"]))
+        y = self._advanced_text(document, y, "telegram.credential_account", "Keychain Account", str(telegram["credential_account"]))
+        y = self._advanced_secret(document, y, "telegram.token", "Telegram Token（留空不修改）")
+
         # Keep the document tall enough for the top-most section.  The scroll
         # view, rather than the window, owns the vertical layout.
-        document.setFrameSize_((660, 1420))
+        document.setFrameSize_((660, 1880))
         cancel = NSButton.alloc().initWithFrame_(NSMakeRect(500, 18, 90, 30))
         cancel.setTitle_("取消")
         cancel.setTarget_(self)
@@ -450,15 +513,18 @@ class CohelperApp(NSObject):
             for key, control in self.advanced_controls.items():
                 if key == "allow_external_api":
                     candidate.section("privacy")["allow_external_api"] = control.state() == 1
-                elif key in {"translation", "knowledge_search", "knowledge_summary", "process_plain_text_only"}:
-                    target = "features" if key in {"translation", "knowledge_search", "knowledge_summary"} else "clipboard"
+                elif key in {"translation", "knowledge_search", "knowledge_answer", "process_plain_text_only"}:
+                    target = "features" if key in {"translation", "knowledge_search", "knowledge_answer"} else "clipboard"
                     candidate.section(target)[key] = control.state() == 1
-                elif key == "qmd.no_rerank":
-                    candidate.section("qmd")["no_rerank"] = control.state() == 1
+                elif key in {"qmd.no_rerank", "telegram.enabled"}:
+                    section_name, field = key.split(".")
+                    candidate.section(section_name)[field] = control.state() == 1
                 elif key.endswith(".provider"):
                     kind = key.split(".")[0]
                     candidate.section(kind)["provider"] = str(control.titleOfSelectedItem())
                 elif key.endswith(".api_key"):
+                    continue
+                elif key == "telegram.token":
                     continue
                 else:
                     parts = key.split(".")
@@ -466,7 +532,11 @@ class CohelperApp(NSObject):
                     value = str(control.stringValue()).strip()
                     if len(parts) == 2:
                         field = parts[1]
-                        if field in {"min_chars", "max_chars", "poll_interval_ms", "debounce_ms", "limit", "query_timeout_seconds", "max_summary_source_chars", "timeout_seconds"}:
+                        if field == "allowed_bundle_ids":
+                            value = [item.strip() for item in value.split(",") if item.strip()]
+                        elif field == "minimum_confidence":
+                            value = float(value)
+                        elif field in {"min_chars", "max_chars", "poll_interval_ms", "debounce_ms", "limit", "query_timeout_seconds", "max_summary_source_chars", "timeout_seconds", "screenshot_max_age_seconds", "confirmation_ttl_seconds", "allowed_user_id"}:
                             value = int(value)
                         section[field] = value
                     else:
@@ -478,6 +548,9 @@ class CohelperApp(NSObject):
                 secret = str(self.advanced_controls[f"{kind}.api_key"].stringValue()).strip()
                 if secret:
                     pending.append((str(candidate.section(kind)["credential_account"]), secret))
+            telegram_token = str(self.advanced_controls["telegram.token"].stringValue()).strip()
+            if telegram_token:
+                pending.append((str(candidate.section("telegram")["credential_account"]), telegram_token))
             old = {account: keychain.get(account) for account, _ in pending}
             for account, secret in pending:
                 keychain.set(account, secret)
@@ -497,6 +570,7 @@ class CohelperApp(NSObject):
             self._start_clipboard_timer()
         self.advanced_window.orderOut_(None)
         self._set_status("cohelper")
+        self._sync_telegram_bridge()
 
     def _set_setup_complete(self, complete):
         state = SetupState.load()
@@ -508,7 +582,7 @@ class CohelperApp(NSObject):
         candidate = Config(copy.deepcopy(self.config.values))
         pending_credentials = []
         labels = {"translation": "翻译", "summary": "总结"}
-        for kind, feature in (("translation", "translation"), ("summary", "knowledge_summary")):
+        for kind, feature in (("translation", "translation"), ("summary", "knowledge_answer")):
             section = candidate.section(kind)
             if candidate.enabled(feature):
                 provider_label = "Ollama" if section["provider"] == "ollama" else "OpenAI-compatible"
@@ -571,6 +645,14 @@ class CohelperApp(NSObject):
 
     @staticmethod
     def _show_error(title, message):
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(title)
+        alert.setInformativeText_(message)
+        alert.addButtonWithTitle_("确定")
+        alert.runModal()
+
+    @staticmethod
+    def _show_info(title, message):
         alert = NSAlert.alloc().init()
         alert.setMessageText_(title)
         alert.setInformativeText_(message)
