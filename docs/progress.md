@@ -54,7 +54,7 @@
   a schema-valid normalized target coordinate.
 - Rebuilt PyInstaller app and DMG after review repairs; DMG checksum/structure,
   deep ad-hoc signature, version `0.1.0`, and local process launch passed. DMG
-  SHA-256: `4b4d1401cc61274d1fb338866d39bd70fc83ad66278ed75a1ae70327c553f5f1`.
+  SHA-256: `8388188d1dd54703873d3cb9c5c49af2ebfbf8bd3b146a79866f4080de430aad`.
 
 ### Pending
 
