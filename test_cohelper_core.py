@@ -72,6 +72,34 @@ def test_knowledge_prompt_caps_source_content():
     assert "a" * 1001 not in prompt
 
 
+def test_paragraph_prompt_uses_summary_routing():
+    prompt = build_knowledge_prompt(
+        "Flink keeps state. Checkpoints persist it。",
+        [(KnowledgeHit("/wiki/flink.md"), "checkpoint content")],
+        task="summarize",
+    )
+
+    assert "用户段落" in prompt
+    assert "总结该段落与知识库来源的关系" in prompt
+    assert "用户问题" not in prompt
+
+
+def test_missing_sources_emit_insufficient_knowledge_answer(monkeypatch):
+    config = Config({"features": {"translation": False}})
+    answers = []
+    finished = threading.Event()
+    monkeypatch.setattr(QmdClient, "search", lambda self, query, cancel=None: [])
+    coordinator = TaskCoordinator(
+        config,
+        TaskCallbacks(on_summary=answers.append, on_finished=finished.set),
+    )
+
+    coordinator.submit("flink")
+
+    assert finished.wait(1)
+    assert [result.text for result in answers] == ["知识库中没有足够依据。"]
+
+
 def test_disabled_modules_do_not_start(monkeypatch):
     config = Config({"features": {"translation": False, "knowledge_search": False, "knowledge_summary": False}})
     started = []
