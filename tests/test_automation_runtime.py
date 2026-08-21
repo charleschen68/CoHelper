@@ -40,3 +40,18 @@ def test_emergency_stop_disarms_and_requires_explicit_resume(tmp_path: Path):
         raise AssertionError("arm must remain blocked until resume")
     runtime.resume()
     runtime.arm("accept")
+
+
+def test_notification_failure_cannot_fail_or_repeat_a_completed_local_action(tmp_path: Path):
+    rule = RuleSpec("accept", (TemplateSpec(Path("/target.png"), 0.9),), (ActionSpec("sound", mode="once"),))
+    runtime = AutomationRuntime(
+        {"accept": RuleGroup("accept", (rule,))},
+        AutomationStateStore(tmp_path / "state.sqlite3"),
+        FakeExecutor(),
+        notify=lambda _: (_ for _ in ()).throw(OSError("queue unavailable")),
+    )
+    runtime.arm("accept")
+
+    outcome = runtime.scan({"accept": True})
+
+    assert outcome is not None and outcome.succeeded

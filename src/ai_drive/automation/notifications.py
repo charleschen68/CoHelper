@@ -16,11 +16,13 @@ class Notification:
 
 class NotificationQueue:
     def __init__(self, path: Path, *, max_items: int = 100, max_age_seconds: float = 86_400, now=time.time):
-        self._connection = sqlite3.connect(path)
+        self._connection = sqlite3.connect(path, timeout=5)
         self._max_items = max_items
         self._max_age_seconds = max_age_seconds
         self._now = now
         with self._connection:
+            self._connection.execute("PRAGMA busy_timeout = 5000")
+            self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.execute("CREATE TABLE IF NOT EXISTS notification_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, created_at REAL NOT NULL)")
             columns = {str(row[1]) for row in self._connection.execute("PRAGMA table_info(notification_queue)")}
             if "created_at" not in columns:

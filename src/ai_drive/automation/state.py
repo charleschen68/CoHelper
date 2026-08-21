@@ -30,9 +30,11 @@ class AutomationStateStore:
 
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(path, check_same_thread=False)
+        self._connection = sqlite3.connect(path, timeout=5, check_same_thread=False)
         self._lock = threading.RLock()
         with self._connection:
+            self._connection.execute("PRAGMA busy_timeout = 5000")
+            self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS rule_state (

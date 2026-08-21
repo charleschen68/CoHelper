@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import logging
 from typing import Mapping, Protocol
 
 from ai_drive.automation.actions import ActionOutcome
@@ -77,5 +78,9 @@ class AutomationRuntime:
             return None
         outcome = self._executor.execute(decision.rule)
         self._state.finish(decision.rule_id, outcome.succeeded)
-        self._notify(f"{decision.rule_id}: {'succeeded' if outcome.succeeded else 'failed'}")
+        try:
+            self._notify(f"{decision.rule_id}: {'succeeded' if outcome.succeeded else 'failed'}")
+        except Exception:
+            # Telegram delivery is intentionally asynchronous from local output.
+            logging.exception("could not persist automation notification")
         return outcome
