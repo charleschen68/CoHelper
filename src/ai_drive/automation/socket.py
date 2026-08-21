@@ -90,3 +90,32 @@ class AutomationUnixSocketServer:
             with connection:
                 request = connection.recv(16_384).decode("utf-8")
                 connection.sendall((self._protocol.handle(request) + "\n").encode("utf-8"))
+
+
+class AutomationSocketClient:
+    """Narrow client used by local CLI and external control transports."""
+
+    def __init__(self, path: Path, request=None):
+        self._path = path
+        self._request = request or self._send
+
+    def status(self) -> str:
+        return self._call({"op": "status"})
+
+    def arm(self, group: str) -> None:
+        self._call({"op": "arm", "group": group})
+
+    def disarm(self, group: str) -> None:
+        self._call({"op": "disarm", "group": group})
+
+    def _call(self, payload: dict[str, str]) -> str:
+        response = json.loads(self._request(json.dumps(payload, ensure_ascii=False)))
+        if not response.get("ok"):
+            raise RuntimeError(str(response.get("error", "automation control failed")))
+        return str(response["status"])
+
+    def _send(self, payload: str) -> str:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.connect(str(self._path))
+            connection.sendall(payload.encode("utf-8"))
+            return connection.recv(16_384).decode("utf-8")

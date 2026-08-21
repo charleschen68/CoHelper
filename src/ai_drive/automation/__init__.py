@@ -11,6 +11,7 @@ from ai_drive.automation.macos_output import QuartzAutomationOutput
 from ai_drive.automation.sound import SystemAlarm
 from ai_drive.automation.socket import AutomationSocketProtocol
 from ai_drive.automation.socket import AutomationUnixSocketServer
+from ai_drive.automation.socket import AutomationSocketClient
 from ai_drive.automation.engine import AutomationEngine, TriggerDecision
 from ai_drive.automation.state import AutomationStateStore, RunState
 
@@ -28,6 +29,7 @@ __all__ = (
     "SystemAlarm",
     "AutomationSocketProtocol",
     "AutomationUnixSocketServer",
+    "AutomationSocketClient",
     "GuardedActionExecutor",
     "OpenCVTemplateMatcher",
     "RunState",
