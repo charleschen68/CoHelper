@@ -15,6 +15,18 @@ Use [automation-rules.example.yaml](../examples/automation-rules.example.yaml)
 only as a schema example. It contains no real screenshots, paths, identities,
 or credentials.
 
+## Manual operation
+
+Start a named group explicitly; the process starts no rules by default:
+
+```bash
+cohelper-automation --config "$HOME/Library/Application Support/cohelper/automation/rules.yaml" --arm accept
+```
+
+The service creates a `0600` Unix socket at
+`~/Library/Application Support/cohelper/automation/control.sock`. Configuration
+file changes stop the service; restart it after validation.
+
 ## Invariants
 
 - One main-display screenshot is shared by each scan; default cadence is five
