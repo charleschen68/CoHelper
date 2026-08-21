@@ -66,4 +66,5 @@ actions:
 telegram:
   enabled: false
   allowed_user_id: 0
+  allowed_chat_id: 0
   credential_account: telegram

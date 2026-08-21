@@ -1,0 +1,55 @@
+# Copy to ~/Library/Application Support/cohelper/automation/rules.yaml.
+# Do not commit that file or real templates. Paths below are intentionally placeholders.
+scan_interval_seconds: 5
+
+groups:
+  accept:
+    rules:
+      - id: accept-confirm
+        priority: 100
+        templates:
+          - path: /Users/you/private-templates/accept_3.png
+            confidence: 0.90
+            region: [0, 0, 1512, 982]
+        actions:
+          - type: sound
+            mode: latched
+          - type: click
+            guard_template: /Users/you/private-templates/accept_3.png
+            offset: [0, 0]
+        success_when:
+          template_disappears: /Users/you/private-templates/accept_3.png
+          timeout_seconds: 10
+
+  auto666666:
+    rules:
+      - id: popup-code
+        priority: 90
+        templates:
+          - path: /Users/you/private-templates/popup_label.png
+            confidence: 0.90
+        actions:
+          - type: click
+            guard_template: /Users/you/private-templates/popup_label.png
+            offset: [100, 0]
+          - type: type_text
+            guard_template: /Users/you/private-templates/popup_label.png
+            keychain_ref: automation.popup-code
+          - type: press_key
+            guard_template: /Users/you/private-templates/popup_label.png
+            key: enter
+        success_when:
+          template_disappears: /Users/you/private-templates/popup_label.png
+          timeout_seconds: 15
+
+  info-alarm:
+    rules:
+      - id: info-alarm
+        priority: 10
+        templates:
+          - path: /Users/you/private-templates/telegram-info.png
+            confidence: 0.90
+        actions:
+          - type: sound
+            mode: once
+          - type: telegram

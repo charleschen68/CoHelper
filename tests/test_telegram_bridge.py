@@ -2,7 +2,8 @@ from dataclasses import dataclass
 import asyncio
 
 from apps.telegram_bridge.service import TelegramCommandHandler
-from apps.telegram_bridge.runtime import _cancel_watcher, _runtime_config, _watch_runtime_config
+from apps.telegram_bridge.runtime import _cancel_watcher, _deliver_notifications, _runtime_config, _watch_runtime_config
+from ai_drive.automation.notifications import NotificationQueue
 from cohelper_core import Config
 
 
@@ -55,17 +56,17 @@ def test_ordinary_message_never_enters_action_workflow():
 
 
 def test_runtime_config_changes_when_bridge_is_disabled_or_identity_changes():
-    original = Config({"telegram": {"enabled": True, "allowed_user_id": 42}})
-    disabled = Config({"telegram": {"enabled": False, "allowed_user_id": 42}})
-    another_user = Config({"telegram": {"enabled": True, "allowed_user_id": 99}})
+    original = Config({"telegram": {"enabled": True, "allowed_user_id": 42, "allowed_chat_id": 7}})
+    disabled = Config({"telegram": {"enabled": False, "allowed_user_id": 42, "allowed_chat_id": 7}})
+    another_user = Config({"telegram": {"enabled": True, "allowed_user_id": 99, "allowed_chat_id": 7}})
 
     assert _runtime_config(original) != _runtime_config(disabled)
     assert _runtime_config(original) != _runtime_config(another_user)
 
 
 def test_runtime_watcher_stops_polling_when_config_changes():
-    original = Config({"telegram": {"enabled": True, "allowed_user_id": 42}})
-    changed = Config({"telegram": {"enabled": False, "allowed_user_id": 42}})
+    original = Config({"telegram": {"enabled": True, "allowed_user_id": 42, "allowed_chat_id": 7}})
+    changed = Config({"telegram": {"enabled": False, "allowed_user_id": 42, "allowed_chat_id": 7}})
 
     class Application:
         stopped = False
@@ -93,7 +94,7 @@ def test_runtime_watcher_stops_polling_when_config_changes():
 
 
 def test_runtime_watcher_stops_when_configuration_cannot_be_loaded():
-    original = Config({"telegram": {"enabled": True, "allowed_user_id": 42}})
+    original = Config({"telegram": {"enabled": True, "allowed_user_id": 42, "allowed_chat_id": 7}})
 
     class Application:
         stopped = False
@@ -124,7 +125,7 @@ def test_runtime_watcher_stops_when_configuration_cannot_be_loaded():
 
 
 def test_unchanged_config_watcher_is_cancelled_during_normal_shutdown():
-    original = Config({"telegram": {"enabled": True, "allowed_user_id": 42}})
+    original = Config({"telegram": {"enabled": True, "allowed_user_id": 42, "allowed_chat_id": 7}})
 
     class Application:
         stopped = False
@@ -156,3 +157,22 @@ def test_unchanged_config_watcher_is_cancelled_during_normal_shutdown():
 
     assert task.cancelled()
     assert not application.stopped
+
+
+def test_notification_delivery_acknowledges_only_sent_messages(tmp_path):
+    class Bot:
+        sent = []
+        async def send_message(self, *, chat_id, text):
+            self.sent.append((chat_id, text))
+
+    async def pause(_):
+        raise asyncio.CancelledError
+
+    queue = NotificationQueue(tmp_path / "state.sqlite")
+    queue.enqueue("rule succeeded")
+    try:
+        asyncio.run(_deliver_notifications(Bot(), 7, queue, pause=pause))
+    except asyncio.CancelledError:
+        pass
+
+    assert queue.pending() == ()

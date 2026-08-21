@@ -12,6 +12,7 @@ dependencies = [
   "pyobjc-framework-Quartz>=12.0",
   "pyobjc-framework-ApplicationServices>=12.0",
   "Pillow>=11.0",
+  "opencv-python-headless>=4.13,<5",
   "PyYAML>=6.0",
   "python-telegram-bot>=22,<23",
   "requests>=2.31",
@@ -20,6 +21,8 @@ dependencies = [
 [project.scripts]
 cohelper = "cohelper_app:run"
 ai-drive-telegram = "apps.telegram_bridge.runtime:run"
+cohelper-automation = "apps.automation_runtime:run"
+cohelper-automationctl = "apps.automation_control:run"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pyinstaller>=6"]
@@ -27,7 +30,8 @@ dev = ["pytest>=8", "pyinstaller>=6"]
 [tool.setuptools]
 py-modules = ["cohelper", "cohelper_app", "cohelper_core", "cohelper_setup"]
 packages = [
-  "ai_drive",
+    "ai_drive",
+    "ai_drive.automation",
   "ai_drive.actions",
   "ai_drive.vision",
   "apps",

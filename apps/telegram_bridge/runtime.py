@@ -14,6 +14,10 @@ from ai_drive.actions import AccessibilityCapability, ActionService
 from ai_drive.macos import MacAccessibilityInspector, QuartzDesktopObserver, QuartzPointerController, QuartzScreenCapture
 from ai_drive.vision import OllamaVisionClient, VisionAnalyzer
 from ai_drive.workflow import VisualClickWorkflow
+from ai_drive.automation.control import AutomationController
+from ai_drive.automation.notifications import NotificationQueue
+from ai_drive.automation.socket import AutomationSocketClient
+from apps.automation_runtime import DEFAULT_SOCKET_PATH, DEFAULT_STATE_PATH
 from cohelper_core import Config
 from cohelper_setup import KeychainStore
 
@@ -83,6 +87,8 @@ class TelegramRuntime:
         if not token:
             raise RuntimeError("macOS Keychain 中没有 Telegram Token")
         handler, allowed_user_id, action_service = build_handler(self._config)
+        allowed_chat_id = int(telegram_config["allowed_chat_id"])
+        automation = AutomationController(AutomationSocketClient(DEFAULT_SOCKET_PATH), allowed_user_id=allowed_user_id, allowed_chat_id=allowed_chat_id)
 
         async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             del context
@@ -91,11 +97,14 @@ class TelegramRuntime:
             message = update.effective_message
             if user is None or chat is None or message is None or message.text is None:
                 return
-            if user.id != allowed_user_id:
+            if user.id != allowed_user_id or chat.id != allowed_chat_id or chat.type != "private" or getattr(message, "forward_origin", None) is not None:
                 await message.reply_text("权限不足。")
                 return
             try:
-                reply = await asyncio.to_thread(handler.handle, message.text, user_id=user.id, chat_id=chat.id)
+                if message.text.strip().startswith("/automation_"):
+                    reply = Reply(await asyncio.to_thread(automation.handle, message.text, user_id=user.id, chat_id=chat.id))
+                else:
+                    reply = await asyncio.to_thread(handler.handle, message.text, user_id=user.id, chat_id=chat.id)
             except Exception as exc:
                 reply = Reply(f"操作被拒绝：{type(exc).__name__}: {exc}")
             await _send_reply(update, reply)
@@ -103,9 +112,11 @@ class TelegramRuntime:
         original_runtime_config = _runtime_config(self._config)
 
         watcher_task = None
+        notification_task = None
+        notification_queue = NotificationQueue(DEFAULT_STATE_PATH)
 
         async def post_init(application) -> None:
-            nonlocal watcher_task
+            nonlocal watcher_task, notification_task
             watcher_task = asyncio.create_task(
                 _watch_runtime_config(
                     application,
@@ -114,10 +125,16 @@ class TelegramRuntime:
                 ),
                 name="ai-drive-config-watch",
             )
+            notification_task = asyncio.create_task(
+                _deliver_notifications(application.bot, allowed_chat_id, notification_queue),
+                name="cohelper-automation-notifications",
+            )
 
         async def post_stop(application) -> None:
             del application
             await _cancel_watcher(watcher_task)
+            await _cancel_watcher(notification_task)
+            notification_queue.close()
 
         application = (
             ApplicationBuilder()
@@ -147,6 +164,7 @@ def _runtime_config(config: Config) -> tuple[object, ...]:
     return (
         telegram["enabled"],
         telegram["allowed_user_id"],
+        telegram["allowed_chat_id"],
         telegram["credential_account"],
         tuple(sorted(vision.items())),
         tuple(actions["allowed_bundle_ids"]),
@@ -186,3 +204,15 @@ async def _cancel_watcher(task: asyncio.Task | None) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+
+async def _deliver_notifications(bot, chat_id: int, queue: NotificationQueue, *, pause=asyncio.sleep) -> None:
+    """Deliver durable text notifications, acknowledging only after Telegram accepts them."""
+    while True:
+        for notification in queue.pending():
+            try:
+                await bot.send_message(chat_id=chat_id, text=notification.text)
+            except Exception:
+                break
+            queue.acknowledge(notification.id)
+        await pause(1)
