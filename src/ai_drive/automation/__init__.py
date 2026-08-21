@@ -4,6 +4,7 @@ from ai_drive.automation.config import AutomationConfig, AutomationConfigError, 
 from ai_drive.automation.actions import ActionOutcome, GuardedActionExecutor
 from ai_drive.automation.control import AutomationController
 from ai_drive.automation.matcher import OpenCVTemplateMatcher, TemplateMatch
+from ai_drive.automation.runtime import AutomationRuntime
 from ai_drive.automation.engine import AutomationEngine, TriggerDecision
 from ai_drive.automation.state import AutomationStateStore, RunState
 
@@ -14,6 +15,7 @@ __all__ = (
     "ActionOutcome",
     "AutomationEngine",
     "AutomationStateStore",
+    "AutomationRuntime",
     "GuardedActionExecutor",
     "OpenCVTemplateMatcher",
     "RunState",

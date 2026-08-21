@@ -38,8 +38,9 @@ class AutomationEngine:
         if not eligible:
             return None
         selected = max(eligible, key=lambda rule: (rule.priority, rule.id))
-        # Write ahead of any irreversible output. A restart will become UNKNOWN.
-        self._state.begin(selected.id)
+        # One conditional SQLite update both claims and writes ahead of output.
+        if not self._state.claim(selected.id):
+            return None
         return TriggerDecision(selected.id, selected)
 
 

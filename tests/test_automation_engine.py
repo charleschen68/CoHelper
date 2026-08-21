@@ -52,3 +52,10 @@ def test_restart_marks_incomplete_action_unknown_and_never_replays_until_rearmed
     engine.scan({"accept": False})
     engine.scan({"accept": False})
     assert engine.scan({"accept": True}).rule_id == "accept"
+
+
+def test_atomic_claim_allows_only_one_concurrent_candidate(tmp_path: Path):
+    store = AutomationStateStore(tmp_path / "state.sqlite3")
+
+    assert store.claim("accept") is True
+    assert store.claim("accept") is False

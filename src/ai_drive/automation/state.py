@@ -86,6 +86,27 @@ class AutomationStateStore:
     def begin(self, rule_id: str) -> None:
         self._upsert(rule_id, run_state=RunState.EXECUTING, triggered=True, consecutive_absent=0)
 
+    def claim(self, rule_id: str) -> bool:
+        """Atomically reserve one previously re-armed rule for irreversible output."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO rule_state(rule_id, run_state, triggered, consecutive_absent)
+                VALUES (?, ?, 0, 0)
+                ON CONFLICT(rule_id) DO NOTHING
+                """,
+                (rule_id, RunState.IDLE),
+            )
+            result = self._connection.execute(
+                """
+                UPDATE rule_state
+                SET run_state = ?, triggered = 1, consecutive_absent = 0
+                WHERE rule_id = ? AND triggered = 0
+                """,
+                (RunState.EXECUTING, rule_id),
+            )
+        return result.rowcount == 1
+
     def finish(self, rule_id: str, succeeded: bool) -> None:
         self._upsert(rule_id, run_state=RunState.SUCCEEDED if succeeded else RunState.FAILED, triggered=True, consecutive_absent=0)
 
