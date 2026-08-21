@@ -6,6 +6,7 @@ from ai_drive.automation.control import AutomationController
 from ai_drive.automation.matcher import OpenCVTemplateMatcher, TemplateMatch
 from ai_drive.automation.runtime import AutomationRuntime
 from ai_drive.automation.runner import AutomationRunner
+from ai_drive.automation.macos import QuartzFrameCapture
 from ai_drive.automation.engine import AutomationEngine, TriggerDecision
 from ai_drive.automation.state import AutomationStateStore, RunState
 
@@ -18,6 +19,7 @@ __all__ = (
     "AutomationStateStore",
     "AutomationRuntime",
     "AutomationRunner",
+    "QuartzFrameCapture",
     "GuardedActionExecutor",
     "OpenCVTemplateMatcher",
     "RunState",
