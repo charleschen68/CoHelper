@@ -13,6 +13,7 @@ from ai_drive.automation.socket import AutomationSocketProtocol
 from ai_drive.automation.socket import AutomationUnixSocketServer
 from ai_drive.automation.socket import AutomationSocketClient
 from ai_drive.automation.notifications import NotificationQueue
+from ai_drive.automation.emergency import EmergencyStopMonitor
 from ai_drive.automation.engine import AutomationEngine, TriggerDecision
 from ai_drive.automation.state import AutomationStateStore, RunState
 
@@ -32,6 +33,7 @@ __all__ = (
     "AutomationUnixSocketServer",
     "AutomationSocketClient",
     "NotificationQueue",
+    "EmergencyStopMonitor",
     "GuardedActionExecutor",
     "OpenCVTemplateMatcher",
     "RunState",

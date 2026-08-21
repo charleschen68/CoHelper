@@ -7,10 +7,11 @@ import logging
 import time
 from pathlib import Path
 
-from Quartz import CGEventCreate, CGEventGetLocation
+from Quartz import CGDisplayBounds, CGEventCreate, CGEventGetLocation, CGMainDisplayID
 
 from ai_drive.automation.actions import GuardedActionExecutor
 from ai_drive.automation.config import AutomationConfig, DEFAULT_CONFIG_PATH, TemplateSpec
+from ai_drive.automation.emergency import EmergencyStopMonitor
 from ai_drive.automation.macos import QuartzFrameCapture
 from ai_drive.automation.macos_output import QuartzAutomationOutput
 from ai_drive.automation.notifications import NotificationQueue
@@ -34,7 +35,11 @@ def _pointer_is_in_emergency_corner() -> bool:
     if event is None:
         return False
     point = CGEventGetLocation(event)
-    return float(point.x) <= 5 and float(point.y) <= 5
+    bounds = CGDisplayBounds(CGMainDisplayID())
+    return (
+        float(bounds.origin.x) <= float(point.x) <= float(bounds.origin.x) + 5
+        and float(bounds.origin.y) <= float(point.y) <= float(bounds.origin.y) + 5
+    )
 
 
 def run() -> None:
@@ -93,6 +98,8 @@ def run() -> None:
     server = AutomationUnixSocketServer(DEFAULT_SOCKET_PATH, AutomationSocketProtocol(runtime))
     source_stamp = arguments.config.stat().st_mtime_ns
     server.start()
+    emergency_monitor = EmergencyStopMonitor(_pointer_is_in_emergency_corner, runtime.emergency_stop)
+    emergency_monitor.start()
     try:
         while True:
             try:
@@ -102,9 +109,6 @@ def run() -> None:
             if not unchanged:
                 logging.warning("automation configuration changed or disappeared; stopping service")
                 break
-            if _pointer_is_in_emergency_corner():
-                runtime.emergency_stop()
-                logging.warning("automation emergency-stopped by pointer in top-left corner")
             started = time.monotonic()
             outcome = runner.scan_once()
             if outcome is not None:
@@ -112,6 +116,7 @@ def run() -> None:
             time.sleep(max(0, config.scan_interval_seconds - (time.monotonic() - started)))
     finally:
         alarm.stop()
+        emergency_monitor.stop()
         server.stop()
         queue.close()
         state.close()

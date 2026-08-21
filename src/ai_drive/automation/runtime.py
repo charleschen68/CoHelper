@@ -62,6 +62,7 @@ class AutomationRuntime:
         with self._lock:
             self._armed.clear()
             self._suspended = True
+        self._stop_alarm()
 
     def resume(self) -> None:
         with self._lock:

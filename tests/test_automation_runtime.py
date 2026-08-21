@@ -27,11 +27,13 @@ def test_runtime_arms_named_group_executes_once_and_finishes_state(tmp_path: Pat
 
 def test_emergency_stop_disarms_and_requires_explicit_resume(tmp_path: Path):
     rule = RuleSpec("accept", (TemplateSpec(Path("/target.png"), 0.9),), (ActionSpec("sound", mode="once"),))
-    runtime = AutomationRuntime({"accept": RuleGroup("accept", (rule,))}, AutomationStateStore(tmp_path / "state.sqlite3"), FakeExecutor())
+    stopped = []
+    runtime = AutomationRuntime({"accept": RuleGroup("accept", (rule,))}, AutomationStateStore(tmp_path / "state.sqlite3"), FakeExecutor(), stop_alarm=lambda: stopped.append(True))
     runtime.arm("accept")
     runtime.emergency_stop()
 
     assert runtime.armed_rules() == ()
+    assert stopped == [True]
     try:
         runtime.arm("accept")
     except RuntimeError as exc:
