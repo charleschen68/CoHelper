@@ -6,9 +6,11 @@ hidden_imports = (
     + collect_submodules("PyObjCTools")
     + collect_submodules("ApplicationServices")
     + collect_submodules("PIL")
+    + collect_submodules("cv2")
     + collect_submodules("telegram")
     + collect_submodules("ai_drive")
     + collect_submodules("apps.telegram_bridge")
+    + collect_submodules("ai_drive.automation")
 )
 
 a = Analysis(
