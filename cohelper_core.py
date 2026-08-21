@@ -12,6 +12,7 @@ import re
 import subprocess
 import threading
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -479,30 +480,38 @@ class TaskCoordinator:
         self._cancel = threading.Event()
 
     def submit(self, text: str) -> None:
-        if not (self.config.enabled("translation") or self.config.enabled("knowledge_search")):
-            return
         with self._lock:
+            config = Config(deepcopy(self.config.values))
+            if not (config.enabled("translation") or config.enabled("knowledge_search")):
+                return
             self._generation += 1
             generation = self._generation
             self._cancel.set()
             self._cancel = threading.Event()
             cancel = self._cancel
-        rejection = self._rejection_reason(text)
+        rejection = self._rejection_reason(text, config)
         if rejection:
             self.callbacks.on_rejected(rejection)
             return
-        if not text or len(text) < int(self.config.section("clipboard")["min_chars"]):
+        if not text or len(text) < int(config.section("clipboard")["min_chars"]):
             return
         self.callbacks.on_started(text)
-        threading.Thread(target=self._run, args=(generation, text, cancel), daemon=True).start()
+        threading.Thread(target=self._run, args=(generation, text, cancel, config), daemon=True).start()
+
+    def update_config(self, config: Config) -> None:
+        """Cancel in-flight work before atomically adopting a new configuration."""
+        with self._lock:
+            self._generation += 1
+            self._cancel.set()
+            self.config = config
 
     def cancel(self) -> None:
         with self._lock:
             self._generation += 1
             self._cancel.set()
 
-    def _rejection_reason(self, text: str) -> str | None:
-        maximum = int(self.config.section("clipboard")["max_chars"])
+    def _rejection_reason(self, text: str, config: Config) -> str | None:
+        maximum = int(config.section("clipboard")["max_chars"])
         if len(text) > maximum:
             return f"剪贴板内容有 {len(text)} 个字符，超过配置上限 {maximum}；未启动任何模型或 QMD。"
         if "\x00" in text:
@@ -519,12 +528,12 @@ class TaskCoordinator:
         with self._lock:
             return generation == self._generation and not cancel.is_set()
 
-    def _run(self, generation: int, text: str, cancel: threading.Event) -> None:
+    def _run(self, generation: int, text: str, cancel: threading.Event, config: Config) -> None:
         jobs: list[threading.Thread] = []
-        if self.config.enabled("translation"):
-            jobs.append(threading.Thread(target=self._translation, args=(generation, text, cancel), daemon=True))
-        if self.config.enabled("knowledge_search"):
-            jobs.append(threading.Thread(target=self._knowledge, args=(generation, text, cancel), daemon=True))
+        if config.enabled("translation"):
+            jobs.append(threading.Thread(target=self._translation, args=(generation, text, cancel, config), daemon=True))
+        if config.enabled("knowledge_search"):
+            jobs.append(threading.Thread(target=self._knowledge, args=(generation, text, cancel, config), daemon=True))
         for job in jobs:
             job.start()
         for job in jobs:
@@ -532,50 +541,57 @@ class TaskCoordinator:
         if self._current(generation, cancel):
             self.callbacks.on_finished()
 
-    def _translation(self, generation: int, text: str, cancel: threading.Event) -> None:
-        if self._external_blocked(text, "translation"):
+    def _translation(
+        self, generation: int, text: str, cancel: threading.Event, config: Config | None = None
+    ) -> None:
+        config = config or self.config
+        if self._external_blocked(text, "translation", config):
             if self._current(generation, cancel):
                 self.callbacks.on_translation(ModelResult(error="外部 API 被隐私策略阻止", provider="blocked"))
             return
-        result = ModelService(self.config, "translation").run(text, TRANSLATION_SYSTEM, cancel)
+        result = ModelService(config, "translation").run(text, TRANSLATION_SYSTEM, cancel)
         if self._current(generation, cancel):
             self.callbacks.on_translation(result)
 
-    def _knowledge(self, generation: int, text: str, cancel: threading.Event) -> None:
+    def _knowledge(
+        self, generation: int, text: str, cancel: threading.Event, config: Config | None = None
+    ) -> None:
+        config = config or self.config
         try:
             route = route_clipboard_text(text)
-            qmd = QmdClient(self.config)
+            qmd = QmdClient(config)
             hits = qmd.search(route.query, cancel)
             if self._current(generation, cancel):
                 self.callbacks.on_knowledge(hits)
-            if not self.config.enabled("knowledge_answer") or not self._current(generation, cancel):
+            if not config.enabled("knowledge_answer") or not self._current(generation, cancel):
                 return
             if not hits:
                 self.callbacks.on_summary(ModelResult(text="知识库中没有足够依据。", provider="knowledge"))
                 return
             documents = [(hit, qmd.get(hit, cancel)) for hit in hits]
-            if self._external_blocked(text, "summary"):
+            if self._external_blocked(text, "summary", config):
                 result = ModelResult(error="外部 API 被隐私策略阻止", provider="blocked")
             else:
                 prompt = build_knowledge_prompt(
                     route.query,
                     documents,
-                    int(self.config.section("knowledge")["max_summary_source_chars"]),
+                    int(config.section("knowledge")["max_summary_source_chars"]),
                     route.task,
                 )
-                if self._external_blocked(prompt, "summary"):
+                if self._external_blocked(prompt, "summary", config):
                     result = ModelResult(error="知识库来源包含疑似敏感信息，外部 API 被隐私策略阻止", provider="blocked")
                 else:
-                    result = ModelService(self.config, "summary").run(prompt, SUMMARY_SYSTEM, cancel)
+                    result = ModelService(config, "summary").run(prompt, SUMMARY_SYSTEM, cancel)
             if self._current(generation, cancel):
                 self.callbacks.on_summary(result)
         except Exception as exc:
             if self._current(generation, cancel):
                 self.callbacks.on_error(f"知识库处理失败：{type(exc).__name__}: {exc}")
 
-    def _external_blocked(self, text: str, kind: str) -> bool:
-        section = self.config.section("translation" if kind == "translation" else "summary")
+    def _external_blocked(self, text: str, kind: str, config: Config | None = None) -> bool:
+        config = config or self.config
+        section = config.section("translation" if kind == "translation" else "summary")
         host = urlparse(str(section.get("base_url", ""))).hostname
         local_host = host in {"127.0.0.1", "localhost", "::1"}
         is_external = not local_host
-        return is_external and (not self.config.section("privacy")["allow_external_api"] or contains_secret(text))
+        return is_external and (not config.section("privacy")["allow_external_api"] or contains_secret(text))

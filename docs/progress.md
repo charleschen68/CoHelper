@@ -1,5 +1,40 @@
 # Progress Log
 
+## 2026-08-21
+
+### Completed
+
+- Live Telegram acceptance completed: `/click Safari 的刷新按钮` produced a
+  preview, `/confirm` refreshed Safari, and the Bridge returned the result
+  screenshot.
+- Native Safari capability discovery now uses only the focused window, requires
+  the control centre to be inside the captured main display, and deduplicates
+  Accessibility traversal.
+- A Telegram security-configuration change or failed reload revokes all
+  pending actions before the Bridge stops. The final authorization generation
+  is checked immediately before Quartz pointer delivery.
+- Clipboard submissions now capture a configuration snapshot; saving a new
+  configuration cancels the active task before installing it.
+- Resolved the P1 findings from the two review axes; the native-intent matcher
+  also avoids treating a generic Chinese "刷新" request as a toolbar reload.
+
+### Verified
+
+- Full unit suite: 93 passed.
+- `python3 -m compileall -q src apps cohelper_core.py cohelper_app.py
+  cohelper_setup.py` and `git diff --check` passed.
+- Rebuilt `dist/cohelper.app` and `dist/cohelper-0.1.0.dmg`; deep ad-hoc
+  signature verification, `hdiutil verify`, version `0.1.0`, bundle identifier
+  `com.charleschen68.cohelper`, and a local application launch passed.
+- DMG SHA-256:
+  `60d0640b4eab1ca389f89a372e45ff85442df2c89eb0b6e9b9c8c19ccf11f012`.
+
+### Remaining release boundary
+
+- This remains a locally verified, ad-hoc-signed artifact. Developer ID
+  signing, notarization, clean-Mac installation, and an explicit merge to
+  `main` are intentionally not claimed or performed.
+
 ## 2026-08-15
 
 ### Confirmed decisions

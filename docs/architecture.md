@@ -27,14 +27,19 @@ cannot enter the action pipeline.
 
 ## Action contract
 
-`ActionService.prepare_click` validates capture age, desktop identity,
-allowlisted application, model confidence, Accessibility role/title, enabled
-state, native capability hierarchy, owner bundle, and sensitive terms. Webpage
-content cannot impersonate an allowlisted browser-toolbar title. Visual
-inference is followed by a fresh identical capture so slow model startup does
-not consume the screenshot age budget. `confirm` binds user and chat,
-captures a fresh main-display screenshot, requires its digest and desktop
-identity to match the prepared screenshot, revalidates Accessibility role and
+`ActionService` first resolves an instruction that names an explicitly
+allowlisted native capability through Accessibility; the default is Safari's
+toolbar refresh button. Native discovery walks only that application's focused
+window and rejects a control outside the captured main-display bounds. This
+avoids relying on a vision model to find a small native icon. Instructions that
+native discovery cannot resolve, and unknown instructions, continue through the visual path. Both paths
+validate capture age, desktop identity, allowlisted application, Accessibility
+role/title, enabled state, native capability hierarchy, owner bundle, and
+sensitive terms. Webpage content cannot impersonate an allowlisted browser-
+toolbar title. Visual inference is followed by a fresh identical capture so
+slow model startup does not consume the screenshot age budget. `confirm` binds user and chat,
+captures a fresh main-display screenshot, requires the prepared target region
+digest and desktop identity to match, revalidates Accessibility role and
 semantics, consumes the action before output, and emits one complete Quartz
 click gesture. A new action for the same user invalidates the old action.
 Preparation generations ensure concurrent requests cannot finish out of order
@@ -42,7 +47,7 @@ and reactivate an older click.
 
 The Telegram Bridge is a standalone manual process. It watches the
 security-relevant configuration and stops when it changes so stale allowlists or
-identities cannot remain active.
+identities cannot remain active; it revokes all pending actions before stopping.
 
 ## Clipboard contract
 

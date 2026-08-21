@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from io import BytesIO
 
 from ApplicationServices import (
@@ -10,16 +11,25 @@ from ApplicationServices import (
     AXIsProcessTrustedWithOptions,
     AXUIElementCopyAttributeValue,
     AXUIElementCopyElementAtPosition,
+    AXUIElementCreateApplication,
     AXUIElementCreateSystemWide,
     AXUIElementGetPid,
+    AXValueGetValue,
     kAXEnabledAttribute,
+    kAXFocusedWindowAttribute,
     kAXDescriptionAttribute,
+    kAXChildrenAttribute,
     kAXHelpAttribute,
     kAXIdentifierAttribute,
     kAXParentAttribute,
     kAXRoleAttribute,
+    kAXPositionAttribute,
+    kAXSizeAttribute,
     kAXTitleAttribute,
     kAXTrustedCheckOptionPrompt,
+    kAXWindowsAttribute,
+    kAXValueCGPointType,
+    kAXValueCGSizeType,
 )
 from Cocoa import (
     NSBitmapImageFileTypeJPEG,
@@ -43,7 +53,12 @@ from Quartz import (
     kCGMouseButtonLeft,
 )
 
-from ai_drive.actions import AccessibleTarget, DesktopState
+from ai_drive.actions import (
+    AccessibilityCapability,
+    AccessibleTarget,
+    DesktopState,
+    LocatedAccessibleTarget,
+)
 from ai_drive.vision import ScreenPoint, Screenshot
 
 
@@ -109,6 +124,38 @@ class MacAccessibilityInspector:
         )
         if error != 0 or element is None:
             return None
+        return self._target_for_element(element)
+
+    def find_capability(
+        self, capability: AccessibilityCapability
+    ) -> LocatedAccessibleTarget | None:
+        """Find one native, explicitly configured control in the frontmost app."""
+        if not self.has_permission():
+            raise PermissionError("macOS Accessibility permission is required")
+        applications = NSRunningApplication.runningApplicationsWithBundleIdentifier_(
+            capability.bundle_id
+        )
+        if not applications:
+            return None
+        application = applications[0]
+        root = self._application_element(application)
+        focused_window = self._attribute(root, kAXFocusedWindowAttribute)
+        if focused_window is None:
+            return None
+        for element in self._walk_elements(focused_window):
+            target = self._target_for_element(element)
+            if target is None or not self._matches_capability(target, capability):
+                continue
+            point = self._center_point(element)
+            if point is not None:
+                return LocatedAccessibleTarget(point, target)
+        return None
+
+    @staticmethod
+    def _application_element(application):
+        return AXUIElementCreateApplication(int(application.processIdentifier()))
+
+    def _target_for_element(self, element) -> AccessibleTarget | None:
         role = self._attribute(element, kAXRoleAttribute)
         title = (
             self._attribute(element, kAXTitleAttribute)
@@ -131,6 +178,74 @@ class MacAccessibilityInspector:
             str(identifier or ""),
             self._ancestor_roles(element),
         )
+
+    @classmethod
+    def _walk_elements(cls, root, max_nodes: int = 512):
+        pending = deque([root])
+        seen: set[int] = set()
+        visited = 0
+        while pending and visited < max_nodes:
+            element = pending.popleft()
+            identity = id(element)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            visited += 1
+            yield element
+            children = cls._attribute(element, kAXChildrenAttribute)
+            windows = cls._attribute(element, kAXWindowsAttribute)
+            for group in (children, windows):
+                if group is None:
+                    continue
+                try:
+                    pending.extend(group)
+                except TypeError:
+                    continue
+
+    @staticmethod
+    def _matches_capability(
+        target: AccessibleTarget, capability: AccessibilityCapability
+    ) -> bool:
+        return (
+            target.owner_bundle_id == capability.bundle_id
+            and target.role == capability.role
+            and target.title.casefold() == capability.title.casefold()
+            and capability.ancestor_role in target.ancestor_roles
+            and (not capability.identifier or target.identifier == capability.identifier)
+        )
+
+    @classmethod
+    def _center_point(cls, element) -> ScreenPoint | None:
+        position = cls._attribute(element, kAXPositionAttribute)
+        size = cls._attribute(element, kAXSizeAttribute)
+        try:
+            point = cls._ax_value(position, kAXValueCGPointType)
+            dimensions = cls._ax_value(size, kAXValueCGSizeType)
+            x = float(cls._component(point, "x", 0))
+            y = float(cls._component(point, "y", 1))
+            width = float(cls._component(dimensions, "width", 0))
+            height = float(cls._component(dimensions, "height", 1))
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return ScreenPoint(x + width / 2, y + height / 2)
+
+    @staticmethod
+    def _component(value, attribute: str, index: int):
+        if hasattr(value, attribute):
+            return getattr(value, attribute)
+        return value[index]
+
+    @staticmethod
+    def _ax_value(value, value_type):
+        """Unbox an Accessibility AXValue into a Python CGPoint or CGSize."""
+        result = AXValueGetValue(value, value_type, None)
+        if isinstance(result, tuple) and len(result) == 2:
+            success, unboxed = result
+            if success:
+                return unboxed
+        raise ValueError("Accessibility geometry attribute is unavailable")
 
     @staticmethod
     def _attribute(element, attribute):

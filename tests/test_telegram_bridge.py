@@ -77,16 +77,19 @@ def test_runtime_watcher_stops_polling_when_config_changes():
         assert seconds == 1
 
     application = Application()
+    revocations = []
     asyncio.run(
         _watch_runtime_config(
             application,
             _runtime_config(original),
             load_config=lambda: changed,
             pause=no_wait,
+            revoke_actions=lambda: revocations.append("revoked"),
         )
     )
 
     assert application.stopped
+    assert revocations == ["revoked"]
 
 
 def test_runtime_watcher_stops_when_configuration_cannot_be_loaded():
@@ -105,16 +108,19 @@ def test_runtime_watcher_stops_when_configuration_cannot_be_loaded():
         raise OSError("unreadable")
 
     application = Application()
+    revocations = []
     asyncio.run(
         _watch_runtime_config(
             application,
             _runtime_config(original),
             load_config=fail_load,
             pause=no_wait,
+            revoke_actions=lambda: revocations.append("revoked"),
         )
     )
 
     assert application.stopped
+    assert revocations == ["revoked"]
 
 
 def test_unchanged_config_watcher_is_cancelled_during_normal_shutdown():

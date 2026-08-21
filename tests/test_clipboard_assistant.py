@@ -4,6 +4,7 @@ from apps.clipboard_helper.service import (
     ClipboardKind,
     route_clipboard_text,
 )
+from cohelper_core import Config, ModelResult, TaskCallbacks, TaskCoordinator
 
 
 class FakeTranslator:
@@ -78,3 +79,34 @@ def test_paragraph_routes_to_source_grounded_summary():
 
     assert route.kind is ClipboardKind.PARAGRAPH
     assert route.task == "summarize"
+
+
+def test_config_update_cancels_inflight_task_and_new_task_uses_new_snapshot(monkeypatch):
+    import cohelper_core
+
+    started = __import__("threading").Event()
+    release = __import__("threading").Event()
+    results = []
+    seen_models = []
+
+    class BlockingModelService:
+        def __init__(self, config, kind):
+            seen_models.append((kind, config.section(kind)["model"]))
+
+        def run(self, text, system, cancel):
+            started.set()
+            release.wait(1)
+            return ModelResult(text="done", provider="test")
+
+    monkeypatch.setattr(cohelper_core, "ModelService", BlockingModelService)
+    config = Config({"features": {"translation": True, "knowledge_search": False, "knowledge_answer": False}, "translation": {"model": "old"}})
+    coordinator = TaskCoordinator(config, TaskCallbacks(on_translation=lambda result: results.append(result)))
+
+    coordinator.submit("enough text")
+    assert started.wait(1)
+    coordinator.update_config(Config({"features": {"translation": True, "knowledge_search": False, "knowledge_answer": False}, "translation": {"model": "new"}}))
+    release.set()
+    __import__("time").sleep(0.05)
+
+    assert seen_models == [("translation", "old")]
+    assert results == []

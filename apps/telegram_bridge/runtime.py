@@ -25,7 +25,7 @@ class HelpChatResponder:
         return "视觉操作请使用 /click <目标描述>。普通消息不会触发电脑操作。"
 
 
-def build_handler(config: Config) -> tuple[TelegramCommandHandler, int]:
+def build_handler(config: Config) -> tuple[TelegramCommandHandler, int, ActionService]:
     telegram = config.section("telegram")
     allowed_user_id = int(telegram["allowed_user_id"])
     if allowed_user_id <= 0:
@@ -51,7 +51,7 @@ def build_handler(config: Config) -> tuple[TelegramCommandHandler, int]:
         confirmation_ttl=float(actions["confirmation_ttl_seconds"]),
     )
     workflow = VisualClickWorkflow(capture, analyzer, action_service)
-    return TelegramCommandHandler(workflow, HelpChatResponder()), allowed_user_id
+    return TelegramCommandHandler(workflow, HelpChatResponder()), allowed_user_id, action_service
 
 
 async def _send_reply(update: Update, reply: Reply) -> None:
@@ -82,7 +82,7 @@ class TelegramRuntime:
         token = KeychainStore().get(str(telegram_config["credential_account"]))
         if not token:
             raise RuntimeError("macOS Keychain 中没有 Telegram Token")
-        handler, allowed_user_id = build_handler(self._config)
+        handler, allowed_user_id, action_service = build_handler(self._config)
 
         async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             del context
@@ -107,7 +107,11 @@ class TelegramRuntime:
         async def post_init(application) -> None:
             nonlocal watcher_task
             watcher_task = asyncio.create_task(
-                _watch_runtime_config(application, original_runtime_config),
+                _watch_runtime_config(
+                    application,
+                    original_runtime_config,
+                    revoke_actions=action_service.revoke_all,
+                ),
                 name="ai-drive-config-watch",
             )
 
@@ -159,6 +163,7 @@ async def _watch_runtime_config(
     *,
     load_config=Config.load,
     pause=asyncio.sleep,
+    revoke_actions=lambda: None,
 ) -> None:
     """Stop polling when security configuration changes or becomes unreadable."""
     while True:
@@ -166,9 +171,11 @@ async def _watch_runtime_config(
         try:
             current = load_config()
         except Exception:
+            revoke_actions()
             application.stop_running()
             return
         if _runtime_config(current) != original_runtime_config:
+            revoke_actions()
             application.stop_running()
             return
 

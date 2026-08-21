@@ -23,14 +23,21 @@ used.
 - Safari/TextEdit bundle allowlist.
 - Native Accessibility capability allowlist keyed by owning bundle, role,
   title, ancestor hierarchy, and optional identifier. Web-content ancestry is
-  always rejected; defaults cover Safari toolbar refresh only.
+  always rejected; defaults cover Safari toolbar refresh only. Instructions
+  matching such a capability may be resolved directly through Accessibility;
+  unresolved and unknown targets still require vision.
+- Native discovery is limited to the target application's focused window and a
+  point within the captured main display.
 - Strict vision schema and minimum confidence.
-- Confirmation-time fresh screenshot, byte digest, display, application, and
-  age validation. Any mismatch consumes the one-use token without clicking.
+- Confirmation-time fresh screenshot, target-region pixel digest, display,
+  application, and age validation. Any mismatch consumes the one-use token
+  without clicking.
 - Accessibility role, title, enabled-state, safe-label, and sensitive-target
   validation before preview and again immediately before execution.
 - A new click request revokes the user's old token on arrival; preparation
   generations prevent a slower old request from becoming active afterward.
+- A security-configuration change or configuration-read failure revokes every
+  pending action before the Telegram Bridge stops.
 - No blind-click fallback and no arbitrary code, shell, keyboard, drag, or
   double-click interface.
 - Memory-only screenshots; Telegram uses in-memory byte streams.

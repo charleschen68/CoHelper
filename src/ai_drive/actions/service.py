@@ -7,7 +7,10 @@ import threading
 import time
 from dataclasses import dataclass
 from hashlib import sha256
+from io import BytesIO
 from typing import Callable, Protocol
+
+from PIL import Image, UnidentifiedImageError
 
 from ai_drive.vision import ScreenPoint, Screenshot, TargetCandidate
 
@@ -24,6 +27,12 @@ class AccessibleTarget:
     owner_bundle_id: str = ""
     identifier: str = ""
     ancestor_roles: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class LocatedAccessibleTarget:
+    point: ScreenPoint
+    target: AccessibleTarget
 
 
 @dataclass(frozen=True)
@@ -54,6 +63,7 @@ class PendingAction:
     frontmost_bundle_id: str
     created_at: float
     screenshot_digest: str
+    authorization_generation: int = 0
 
 
 @dataclass(frozen=True)
@@ -64,6 +74,10 @@ class ActionResult:
 
 class AccessibilityInspector(Protocol):
     def target_at(self, point: ScreenPoint) -> AccessibleTarget | None: ...
+
+    def find_capability(
+        self, capability: AccessibilityCapability
+    ) -> LocatedAccessibleTarget | None: ...
 
 
 class DesktopObserver(Protocol):
@@ -97,6 +111,54 @@ _SENSITIVE_TERMS = {
 _SAFE_LABEL_ALIASES = (
     ({"刷新"}, {"reload", "refresh"}),
 )
+_NATIVE_CAPABILITY_INTENTS = {
+    "reload this page": (
+        "reload this page",
+        "refresh page",
+        "刷新按钮",
+        "刷新当前页面",
+        "重新加载页面",
+        "重新加载当前页面",
+    ),
+    "刷新按钮": (
+        "reload this page",
+        "refresh page",
+        "刷新按钮",
+        "刷新当前页面",
+        "重新加载页面",
+        "重新加载当前页面",
+    ),
+}
+_TARGET_REGION_RADIUS_LOGICAL = 32.0
+
+
+def _target_region_digest(screenshot: Screenshot, point: ScreenPoint) -> str:
+    """Digest only the native target's surrounding pixels, not the full desktop.
+
+    The target itself is separately revalidated through Accessibility at
+    confirmation. Decoding before hashing avoids false mismatches from JPEG
+    container metadata or encoder output while still rejecting a changed target
+    region. Test fixtures that are not images retain the former byte digest.
+    """
+    try:
+        image = Image.open(BytesIO(screenshot.image)).convert("RGB")
+        scale_x = screenshot.pixel_width / screenshot.logical_width
+        scale_y = screenshot.pixel_height / screenshot.logical_height
+        center_x = (point.x - screenshot.origin_x) * scale_x
+        center_y = (point.y - screenshot.origin_y) * scale_y
+        radius_x = _TARGET_REGION_RADIUS_LOGICAL * scale_x
+        radius_y = _TARGET_REGION_RADIUS_LOGICAL * scale_y
+        box = (
+            max(0, int(center_x - radius_x)),
+            max(0, int(center_y - radius_y)),
+            min(image.width, int(center_x + radius_x)),
+            min(image.height, int(center_y + radius_y)),
+        )
+        if box[0] >= box[2] or box[1] >= box[3]:
+            raise ValueError("target region is outside the screenshot")
+        return sha256(image.crop(box).tobytes()).hexdigest()
+    except (OSError, UnidentifiedImageError, ValueError):
+        return sha256(screenshot.image).hexdigest()
 
 
 def _labels_match(vision_label: str, accessibility_label: str) -> bool:
@@ -109,6 +171,13 @@ def _labels_match(vision_label: str, accessibility_label: str) -> bool:
         and any(term in accessibility for term in english)
         for localized, english in _SAFE_LABEL_ALIASES
     )
+
+
+def _native_instruction_matches(instruction: str, capability: AccessibilityCapability) -> bool:
+    """Require an explicit, capability-specific intent before native discovery."""
+    intents = _NATIVE_CAPABILITY_INTENTS.get(capability.title.casefold(), ())
+    normalized = instruction.casefold()
+    return any(intent in normalized for intent in intents)
 
 
 class ActionService:
@@ -151,7 +220,16 @@ class ActionService:
         self._pending_by_user: dict[int, str] = {}
         self._preparation_by_user: dict[int, int] = {}
         self._preparation_sequence = 0
+        self._authorization_generation = 0
         self._pending_lock = threading.Lock()
+
+    def revoke_all(self) -> None:
+        """Make every prepared action unconfirmable after an authorization change."""
+        with self._pending_lock:
+            self._authorization_generation += 1
+            self._pending.clear()
+            self._pending_by_user.clear()
+            self._preparation_by_user.clear()
 
     def begin_click(self, user_id: int) -> int:
         """Invalidate the user's old action as soon as a new click request arrives."""
@@ -175,14 +253,7 @@ class ActionService:
     ) -> PendingAction:
         if preparation_id is None:
             preparation_id = self.begin_click(user_id)
-        state = self._desktop.state()
-        if screenshot.frontmost_bundle_id not in self._allowed_bundle_ids:
-            raise ActionRejected("frontmost application is not allowlisted")
-        if state != DesktopState(screenshot.display_id, screenshot.frontmost_bundle_id):
-            raise ActionRejected("desktop state changed after capture")
-        now = self._now()
-        if now - screenshot.captured_at > self._screenshot_max_age:
-            raise ActionRejected("screenshot is stale")
+        self._validate_screenshot_desktop(screenshot)
         if target.confidence < self._minimum_confidence:
             raise ActionRejected("vision confidence is too low")
         point = screenshot.to_screen_point(target.point)
@@ -190,6 +261,87 @@ class ActionService:
         self._validate_accessible(
             screenshot.frontmost_bundle_id, target.description, accessible
         )
+        self._validate_screenshot_desktop(screenshot)
+        assert accessible is not None
+        return self._store_pending(
+            screenshot,
+            point,
+            target.description,
+            accessible,
+            user_id=user_id,
+            chat_id=chat_id,
+            preparation_id=preparation_id,
+        )
+
+    def prepare_capability_click(
+        self,
+        screenshot: Screenshot,
+        instruction: str,
+        *,
+        user_id: int,
+        chat_id: int,
+        preparation_id: int | None = None,
+    ) -> PendingAction | None:
+        """Prepare an explicitly allowlisted native control without vision.
+
+        Returning ``None`` means native discovery did not resolve an approved
+        capability, so callers may use the vision path. That path must still
+        prove the exact same Accessibility capability before it can prepare an
+        action.
+        """
+        if preparation_id is None:
+            preparation_id = self.begin_click(user_id)
+        bundle_id = screenshot.frontmost_bundle_id
+        candidates = tuple(
+            capability
+            for capability in self._allowed_capabilities
+            if capability.bundle_id == bundle_id
+            and _native_instruction_matches(instruction, capability)
+        )
+        if not candidates:
+            return None
+        self._validate_screenshot_desktop(screenshot)
+        for capability in candidates:
+            located = self._inspector.find_capability(capability)
+            if located is None:
+                continue
+            if not self._point_in_screenshot(screenshot, located.point):
+                raise ActionRejected("native target is outside the captured main display")
+            self._validate_accessible(bundle_id, instruction, located.target)
+            self._validate_screenshot_desktop(screenshot)
+            return self._store_pending(
+                screenshot,
+                located.point,
+                instruction,
+                located.target,
+                user_id=user_id,
+                chat_id=chat_id,
+                preparation_id=preparation_id,
+            )
+        return None
+
+    def _validate_screenshot_desktop(self, screenshot: Screenshot) -> None:
+        if screenshot.frontmost_bundle_id not in self._allowed_bundle_ids:
+            raise ActionRejected("frontmost application is not allowlisted")
+        if self._desktop.state() != DesktopState(
+            screenshot.display_id, screenshot.frontmost_bundle_id
+        ):
+            raise ActionRejected("desktop state changed after capture")
+        if self._now() - screenshot.captured_at > self._screenshot_max_age:
+            raise ActionRejected("screenshot is stale")
+
+    def _store_pending(
+        self,
+        screenshot: Screenshot,
+        point: ScreenPoint,
+        target_description: str,
+        accessible: AccessibleTarget,
+        *,
+        user_id: int,
+        chat_id: int,
+        preparation_id: int,
+    ) -> PendingAction:
+        now = self._now()
         with self._pending_lock:
             if self._preparation_by_user.get(user_id) != preparation_id:
                 raise ActionRejected("a newer click request superseded this preparation")
@@ -201,19 +353,19 @@ class ActionService:
                     break
             if not action_id:
                 raise ActionRejected("could not allocate a unique action identifier")
-            assert accessible is not None
             action = PendingAction(
                 action_id,
                 user_id,
                 chat_id,
                 point,
-                target.description,
+                target_description,
                 accessible.role,
                 accessible.title,
                 screenshot.display_id,
                 screenshot.frontmost_bundle_id,
                 now,
-                sha256(screenshot.image).hexdigest(),
+                _target_region_digest(screenshot, point),
+                self._authorization_generation,
             )
             self._pending[action.action_id] = action
             self._pending_by_user[user_id] = action.action_id
@@ -235,8 +387,8 @@ class ActionService:
             raise ActionRejected("confirmation screenshot is stale")
         if screenshot.display_id != action.display_id or screenshot.frontmost_bundle_id != action.frontmost_bundle_id:
             raise ActionRejected("confirmation screenshot desktop state changed")
-        if sha256(screenshot.image).hexdigest() != action.screenshot_digest:
-            raise ActionRejected("screen content changed before confirmation")
+        if _target_region_digest(screenshot, action.point) != action.screenshot_digest:
+            raise ActionRejected("target region changed before confirmation")
         state = self._desktop.state()
         if state != DesktopState(action.display_id, action.frontmost_bundle_id):
             raise ActionRejected("desktop state changed before confirmation")
@@ -250,7 +402,13 @@ class ActionService:
             or accessible.title != action.accessible_title
         ):
             raise ActionRejected("Accessibility target changed before confirmation")
-        self._pointer.click(action.point)
+        # Keep the final authorization check and the irreversible click in the
+        # same critical section. A config watcher can revoke permissions from
+        # another thread while confirmation is still being validated.
+        with self._pending_lock:
+            if action.authorization_generation != self._authorization_generation:
+                raise ActionRejected("action authorization was revoked")
+            self._pointer.click(action.point)
         return ActionResult(action.action_id, action.point)
 
     def cancel(self, action_id: str, *, user_id: int, chat_id: int) -> None:
@@ -298,3 +456,10 @@ class ActionService:
             raise ActionRejected("Accessibility target is not an allowlisted native capability")
         if not _labels_match(target_description, accessible.title):
             raise ActionRejected("vision target does not match Accessibility target")
+
+    @staticmethod
+    def _point_in_screenshot(screenshot: Screenshot, point: ScreenPoint) -> bool:
+        return (
+            screenshot.origin_x <= point.x < screenshot.origin_x + screenshot.logical_width
+            and screenshot.origin_y <= point.y < screenshot.origin_y + screenshot.logical_height
+        )

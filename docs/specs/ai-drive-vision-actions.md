@@ -33,13 +33,18 @@ are absent, the application must say that the knowledge base is insufficient.
 
 ## Visual action behavior
 
-Version one supports the main display and a single mouse click only. Qwen
+Version one supports the main display and a single mouse click only. An
+instruction that names an explicitly allowlisted native Accessibility capability
+is resolved directly through Accessibility in the application's focused window;
+the control must also be within the captured main-display bounds. The safe default enables Safari
+toolbar refresh and no TextEdit action. Instructions that cannot be resolved
+natively, and other instructions, use Qwen, which
 returns a strictly validated target candidate. Retina coordinate mapping,
 frontmost-application identity, screenshot age, display identity, and
 Accessibility target semantics must be validated before confirmation and again
 before execution. Safari and TextEdit initially pass the application gate, but
 an action is enabled only when an explicit native Accessibility capability also
-matches; the safe default enables Safari toolbar refresh and no TextEdit action.
+matches.
 Password,
 Keychain, authorization, security settings, destructive, purchase, and system
 permission targets are rejected. There is no blind-click fallback.
@@ -51,8 +56,11 @@ permission targets are rejected. There is no blind-click fallback.
 - `/confirm <action-id>` executes a matching, unexpired, one-use action.
 - `/cancel <action-id>` cancels it.
 - A new click cancels the user's previous pending click.
-- Pending actions expire after 30 seconds and bind user, chat, screenshot,
-  display, frontmost application, and coordinate.
+- Pending actions expire after 30 seconds and bind user, chat, target-region
+  screenshot digest, display, frontmost application, and coordinate. The exact
+  native Accessibility target is revalidated before the click.
+- A security-configuration change or failed configuration read revokes pending
+  actions before the Bridge stops.
 - Ordinary chat never produces a pointer action.
 
 The Telegram token is stored in macOS Keychain. Screenshots are memory-only

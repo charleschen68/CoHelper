@@ -36,6 +36,19 @@ def test_vision_analyzer_accepts_only_structured_target_output():
     assert target.description == "刷新按钮"
 
 
+class PixelSpaceVisionClient:
+    def analyze(self, model: str, image: bytes, prompt: str) -> str:
+        return '{"found": true, "x": 1500, "y": 500, "confidence": 0.91, "description": "刷新按钮"}'
+
+
+def test_vision_analyzer_converts_bounded_physical_pixel_coordinates():
+    screenshot = Screenshot(b"jpeg", 3000, 1000, 1500, 500, 1, 100.0, "com.apple.Safari")
+
+    target = VisionAnalyzer(PixelSpaceVisionClient()).locate(screenshot, "刷新页面")
+
+    assert target.point == NormalizedPoint(500, 500)
+
+
 class MarkdownVisionClient:
     def analyze(self, model: str, image: bytes, prompt: str) -> str:
         return '```json\n{"x": 1, "y": 2}\n```'

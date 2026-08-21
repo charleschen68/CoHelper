@@ -76,9 +76,9 @@ ai-drive-telegram
 /confirm A7K3
 ```
 
-操作编号由 Bot 生成，固定 30 秒后失效且只能使用一次。新 `/click` 到达时会立即撤销旧操作。Safari 与 TextEdit 仅通过应用门禁，Accessibility 元素还必须精确匹配 `actions.allowed_capabilities` 中的“应用 + 角色 + 标题 + 原生层级 + 可选标识符”；安全默认仅启用 Safari 原生工具栏刷新，不启用任何 TextEdit 操作，网页 `AXWebArea` 中的同名伪造按钮始终拒绝。视觉推理后和确认时都会重新截图并要求屏幕摘要、应用、显示器和 Accessibility 语义完全一致。敏感按钮和无法确认的目标会被拒绝。Telegram 预览会经过 Telegram 服务器，不应在敏感桌面上使用。
+操作编号由 Bot 生成，固定 30 秒后失效且只能使用一次。新 `/click` 到达时会立即撤销旧操作。Safari 与 TextEdit 仅通过应用门禁，Accessibility 元素还必须精确匹配 `actions.allowed_capabilities` 中的“应用 + 角色 + 标题 + 原生层级 + 可选标识符”；安全默认仅启用 Safari 原生工具栏刷新，不启用任何 TextEdit 操作。命中这类已允许原生能力的指令会优先通过 Accessibility 定位，仅遍历应用的焦点窗口，并且按钮中心必须落在当前主屏截图内；若原生查找未命中，才进入仍需相同能力复验的视觉路径。网页 `AXWebArea` 中的同名伪造按钮始终拒绝。确认时会重新截图并要求目标区域摘要、应用、显示器和 Accessibility 语义完全一致。敏感按钮和无法确认的目标会被拒绝。Telegram 预览会经过 Telegram 服务器，不应在敏感桌面上使用。
 
-Bridge 是独立的手动进程，不嵌入菜单栏线程，也不随登录自动启动。运行期间若 Telegram、视觉或动作安全配置改变，Bridge 会停止；重新执行 `ai-drive-telegram` 才会加载新配置。
+Bridge 是独立的手动进程，不嵌入菜单栏线程，也不随登录自动启动。运行期间若 Telegram、视觉或动作安全配置改变，Bridge 会先撤销全部待确认动作再停止；重新执行 `ai-drive-telegram` 才会加载新配置。
 
 ## 构建 `.app`
 

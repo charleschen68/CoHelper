@@ -42,6 +42,9 @@ class Actions:
     def begin_click(self, user_id):
         return 9
 
+    def prepare_capability_click(self, shot, instruction, *, user_id, chat_id, preparation_id):
+        return None
+
     def prepare_click(self, shot, target, *, user_id, chat_id, preparation_id):
         self.prepared_with = (shot, preparation_id)
         return PendingAction(
@@ -66,6 +69,30 @@ def test_prepare_recaptures_after_inference_and_uses_fresh_capture():
     assert prepared.action_id == "A7K3"
     assert actions.prepared_with == (fresh, 9)
     assert capture.count == 2
+
+
+class NativeActions(Actions):
+    def prepare_capability_click(self, shot, instruction, *, user_id, chat_id, preparation_id):
+        return PendingAction(
+            "A7K3", user_id, chat_id, ScreenPoint(50, 25), instruction,
+            "AXButton", "刷新按钮", shot.display_id, shot.frontmost_bundle_id,
+            shot.captured_at, sha256(shot.image).hexdigest(),
+        )
+
+
+class FailingAnalyzer:
+    def locate(self, screenshot, instruction):
+        raise AssertionError("vision must not run for an allowlisted native capability")
+
+
+def test_prepare_uses_allowlisted_native_capability_before_vision():
+    image = image_bytes()
+    capture = Capture([screenshot(image, 100)])
+
+    prepared = VisualClickWorkflow(capture, FailingAnalyzer(), NativeActions()).prepare("刷新", 42, 7)
+
+    assert prepared.action_id == "A7K3"
+    assert capture.count == 1
 
 
 def test_prepare_rejects_screen_change_during_inference():

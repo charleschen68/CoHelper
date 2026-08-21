@@ -30,6 +30,18 @@ class VisualClickWorkflow:
     def prepare(self, instruction: str, user_id: int, chat_id: int) -> PreparedVisualClick:
         preparation_id = self._actions.begin_click(user_id)
         screenshot = self._capture.capture_main_display()
+        native_action = self._actions.prepare_capability_click(
+            screenshot,
+            instruction,
+            user_id=user_id,
+            chat_id=chat_id,
+            preparation_id=preparation_id,
+        )
+        if native_action is not None:
+            preview = annotate_target(
+                screenshot, native_action.point, native_action.accessible_title
+            )
+            return PreparedVisualClick(native_action.action_id, preview)
         target = self._analyzer.locate(screenshot, instruction)
         verification = self._capture.capture_main_display()
         if (

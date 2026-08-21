@@ -1,8 +1,17 @@
 import pytest
 import threading
+from io import BytesIO
 
-from ai_drive.actions import AccessibleTarget, ActionRejected, ActionService, DesktopState
-from ai_drive.vision import NormalizedPoint, Screenshot, TargetCandidate
+from PIL import Image, PngImagePlugin
+
+from ai_drive.actions import (
+    AccessibleTarget,
+    ActionRejected,
+    ActionService,
+    DesktopState,
+    LocatedAccessibleTarget,
+)
+from ai_drive.vision import NormalizedPoint, ScreenPoint, Screenshot, TargetCandidate
 
 
 class FakeInspector:
@@ -17,6 +26,11 @@ class FakeInspector:
 
     def target_at(self, point):
         return self.target
+
+    def find_capability(self, capability):
+        if capability.title != self.target.title:
+            return None
+        return LocatedAccessibleTarget(ScreenPoint(12, 15), self.target)
 
 
 class FakeDesktop:
@@ -34,6 +48,15 @@ class FakePointer:
 
 def screenshot(image=b"jpeg", captured_at=98.0, display_id=1, bundle_id="com.apple.Safari"):
     return Screenshot(image, 200, 100, 100, 50, display_id, captured_at, bundle_id)
+
+
+def image_bytes(color="white", metadata=None):
+    output = BytesIO()
+    info = PngImagePlugin.PngInfo()
+    if metadata:
+        info.add_text("diagnostic", metadata)
+    Image.new("RGB", (200, 100), color).save(output, "PNG", pnginfo=info)
+    return output.getvalue()
 
 
 def test_valid_accessible_target_creates_bound_pending_action():
@@ -55,6 +78,67 @@ def test_valid_accessible_target_creates_bound_pending_action():
     assert pending.chat_id == 7
     assert pending.accessible_title == "刷新按钮"
     assert len(pending.screenshot_digest) == 64
+
+
+def test_allowlisted_native_capability_bypasses_vision_but_keeps_confirmation_guards():
+    service = ActionService(
+        FakeInspector(), FakeDesktop(), FakePointer(), now=lambda: 100.0, id_factory=lambda: "A7K3"
+    )
+
+    pending = service.prepare_capability_click(
+        screenshot(), "Safari 的刷新按钮", user_id=42, chat_id=7
+    )
+
+    assert pending is not None
+    assert pending.point == ScreenPoint(12, 15)
+    assert pending.accessible_title == "刷新按钮"
+
+
+def test_native_capability_outside_captured_main_display_is_rejected():
+    class OffDisplayInspector(FakeInspector):
+        def find_capability(self, capability):
+            return LocatedAccessibleTarget(ScreenPoint(120, 15), self.target)
+
+    service = ActionService(
+        OffDisplayInspector(), FakeDesktop(), FakePointer(), now=lambda: 100.0, id_factory=lambda: "A7K3"
+    )
+
+    with pytest.raises(ActionRejected, match="outside the captured main display"):
+        service.prepare_capability_click(screenshot(), "Safari 的刷新按钮", user_id=42, chat_id=7)
+
+
+def test_unknown_instruction_does_not_enumerate_native_capabilities():
+    service = ActionService(
+        FakeInspector(), FakeDesktop(), FakePointer(), now=lambda: 100.0, id_factory=lambda: "A7K3"
+    )
+
+    assert service.prepare_capability_click(
+        screenshot(), "关闭 Safari", user_id=42, chat_id=7
+    ) is None
+
+
+def test_ambiguous_refresh_word_does_not_trigger_native_capability_discovery():
+    service = ActionService(
+        FakeInspector(), FakeDesktop(), FakePointer(), now=lambda: 100.0, id_factory=lambda: "A7K3"
+    )
+
+    assert service.prepare_capability_click(
+        screenshot(), "刷新这个表单中的数据", user_id=42, chat_id=7
+    ) is None
+
+
+def test_missing_native_capability_can_fall_back_to_the_separately_validated_vision_path():
+    class UnavailableInspector(FakeInspector):
+        def find_capability(self, capability):
+            return None
+
+    service = ActionService(
+        UnavailableInspector(), FakeDesktop(), FakePointer(), now=lambda: 100.0, id_factory=lambda: "A7K3"
+    )
+
+    assert service.prepare_capability_click(
+        screenshot(), "Safari 的刷新按钮", user_id=42, chat_id=7
+    ) is None
 
 
 def test_public_action_service_rejects_longer_confirmation_ttl():
@@ -128,7 +212,9 @@ def test_sensitive_accessibility_target_is_rejected():
 
 
 def test_expired_confirmation_never_clicks():
-    clock = iter((100.0, 131.0))
+    # Preparation validates the desktop before and after native inspection,
+    # then stores the action; confirmation happens after the TTL.
+    clock = iter((100.0, 100.0, 100.0, 131.0))
     pointer = FakePointer()
     service = ActionService(
         FakeInspector(), FakeDesktop(), pointer, now=lambda: next(clock), id_factory=lambda: "A7K3"
@@ -182,11 +268,30 @@ def test_changed_screen_content_consumes_token_without_clicking():
         screenshot(), TargetCandidate(NormalizedPoint(500, 500), 0.91, "刷新按钮"), user_id=42, chat_id=7
     )
 
-    with pytest.raises(ActionRejected, match="screen content changed"):
+    with pytest.raises(ActionRejected, match="target region changed"):
         service.confirm("A7K3", user_id=42, chat_id=7, screenshot=screenshot(image=b"changed"))
     with pytest.raises(ActionRejected, match="does not exist"):
         service.confirm("A7K3", user_id=42, chat_id=7, screenshot=screenshot())
     assert pointer.clicks == []
+
+
+def test_confirmation_ignores_image_container_metadata_when_target_pixels_are_unchanged():
+    pointer = FakePointer()
+    service = ActionService(
+        FakeInspector(), FakeDesktop(), pointer, now=lambda: 100.0, id_factory=lambda: "A7K3"
+    )
+    service.prepare_click(
+        screenshot(image_bytes(metadata="first")),
+        TargetCandidate(NormalizedPoint(500, 500), 0.91, "刷新按钮"),
+        user_id=42,
+        chat_id=7,
+    )
+
+    service.confirm(
+        "A7K3", user_id=42, chat_id=7, screenshot=screenshot(image_bytes(metadata="second"))
+    )
+
+    assert len(pointer.clicks) == 1
 
 
 @pytest.mark.parametrize(
@@ -305,3 +410,19 @@ def test_new_request_immediately_cancels_old_action_and_supersedes_slow_prepare(
         screenshot(), target, user_id=42, chat_id=7, preparation_id=new_prepare
     )
     assert pending.action_id == "NEW"
+
+
+def test_authorization_revocation_invalidates_prepared_actions_before_clicking():
+    pointer = FakePointer()
+    service = ActionService(
+        FakeInspector(), FakeDesktop(), pointer, now=lambda: 100.0, id_factory=lambda: "A7K3"
+    )
+    service.prepare_click(
+        screenshot(), TargetCandidate(NormalizedPoint(500, 500), 0.91, "刷新按钮"), user_id=42, chat_id=7
+    )
+
+    service.revoke_all()
+
+    with pytest.raises(ActionRejected, match="does not exist"):
+        service.confirm("A7K3", user_id=42, chat_id=7, screenshot=screenshot())
+    assert pointer.clicks == []

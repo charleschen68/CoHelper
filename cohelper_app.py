@@ -541,7 +541,7 @@ class CohelperApp(NSObject):
             self._show_error("配置保存失败", str(exc))
             return
         self.config = candidate
-        self.coordinator.config = candidate
+        self.coordinator.update_config(candidate)
         if hasattr(self, "timer"):
             self.timer.invalidate()
             self._start_clipboard_timer()

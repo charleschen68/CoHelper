@@ -48,14 +48,35 @@ class VisionAnalyzer:
         if any(isinstance(payload[key], bool) for key in ("x", "y", "confidence")):
             raise VisionAnalysisError("vision response contains invalid values")
         try:
-            point = NormalizedPoint(float(payload["x"]), float(payload["y"]))
+            x = float(payload["x"])
+            y = float(payload["y"])
             confidence = float(payload["confidence"])
             description = str(payload["description"]).strip()
         except (TypeError, ValueError) as exc:
             raise VisionAnalysisError("vision response contains invalid values") from exc
+        point = self._to_normalized_point(screenshot, x, y)
         if not 0 <= confidence <= 1 or not description:
             raise VisionAnalysisError("vision response contains invalid values")
         return TargetCandidate(point, confidence, description)
+
+    @staticmethod
+    def _to_normalized_point(screenshot: Screenshot, x: float, y: float) -> NormalizedPoint:
+        """Accept the documented normalized space and a bounded local pixel fallback.
+
+        Qwen occasionally returns coordinates in the physical pixel space of
+        the exact image it received. The fallback is deliberately unavailable
+        for values outside the captured image; downstream Accessibility
+        validation still has to identify the configured native capability.
+        """
+        try:
+            return NormalizedPoint(x, y)
+        except ValueError:
+            if 0 <= x <= screenshot.pixel_width and 0 <= y <= screenshot.pixel_height:
+                return NormalizedPoint(
+                    x * 1000 / screenshot.pixel_width,
+                    y * 1000 / screenshot.pixel_height,
+                )
+            raise VisionAnalysisError("vision response contains invalid values") from None
 
     @staticmethod
     def _prompt(instruction: str) -> str:
