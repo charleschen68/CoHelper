@@ -43,6 +43,8 @@ def run() -> None:
     parser.add_argument("--arm", action="append", default=[])
     arguments = parser.parse_args()
     config = AutomationConfig.load(arguments.config)
+    for group, reason in config.disabled_groups.items():
+        logging.error("automation group %s is disabled by invalid configuration: %s", group, reason)
     state = AutomationStateStore(DEFAULT_STATE_PATH)
     queue = NotificationQueue(DEFAULT_STATE_PATH)
     matcher = OpenCVTemplateMatcher()

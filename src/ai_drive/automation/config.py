@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -65,6 +65,7 @@ class RuleGroup:
 class AutomationConfig:
     scan_interval_seconds: float
     groups: Mapping[str, RuleGroup]
+    disabled_groups: Mapping[str, str] = field(default_factory=dict)
     source_path: Path | None = None
 
     @classmethod
@@ -76,7 +77,7 @@ class AutomationConfig:
         except yaml.YAMLError as exc:
             raise AutomationConfigError(f"cannot parse automation configuration: {exc}") from exc
         config = parse_automation_config(payload, base_dir=path.parent)
-        return cls(config.scan_interval_seconds, config.groups, path)
+        return cls(config.scan_interval_seconds, config.groups, config.disabled_groups, path)
 
 
 def parse_automation_config(payload: object, *, base_dir: Path) -> AutomationConfig:
@@ -86,17 +87,23 @@ def parse_automation_config(payload: object, *, base_dir: Path) -> AutomationCon
         raise AutomationConfigError("scan_interval_seconds must be between 1 and 300")
     groups_payload = _mapping(root.get("groups", {}), "groups")
     groups: dict[str, RuleGroup] = {}
+    disabled_groups: dict[str, str] = {}
     rule_ids: set[str] = set()
     for group_name, group_payload in groups_payload.items():
         if not isinstance(group_name, str) or not group_name.strip():
             raise AutomationConfigError("group names must be non-empty strings")
-        group_map = _mapping(group_payload, f"groups.{group_name}")
-        rules_payload = _list(group_map.get("rules", []), f"groups.{group_name}.rules")
-        rules = tuple(_parse_rule(item, base_dir, group_name, rule_ids) for item in rules_payload)
-        if not rules:
-            raise AutomationConfigError(f"groups.{group_name}.rules must not be empty")
-        groups[group_name] = RuleGroup(group_name, rules)
-    return AutomationConfig(interval, groups)
+        try:
+            group_map = _mapping(group_payload, f"groups.{group_name}")
+            rules_payload = _list(group_map.get("rules", []), f"groups.{group_name}.rules")
+            candidate_rule_ids = set(rule_ids)
+            rules = tuple(_parse_rule(item, base_dir, group_name, candidate_rule_ids) for item in rules_payload)
+            if not rules:
+                raise AutomationConfigError(f"groups.{group_name}.rules must not be empty")
+            groups[group_name] = RuleGroup(group_name, rules)
+            rule_ids.update(candidate_rule_ids)
+        except AutomationConfigError as exc:
+            disabled_groups[group_name] = str(exc)
+    return AutomationConfig(interval, groups, disabled_groups)
 
 
 def _parse_rule(payload: object, base_dir: Path, group_name: str, known_ids: set[str]) -> RuleSpec:

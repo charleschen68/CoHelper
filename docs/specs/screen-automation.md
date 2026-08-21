@@ -34,6 +34,9 @@ The service creates a `0600` Unix socket at
 file changes stop the service; restart it after validation. `start all` is
 rejected: starting requires an explicit configured group.
 
+An invalid YAML document stops all scanning. An invalid individual rule group is
+disabled and its reason is logged; valid groups continue to run.
+
 Moving the pointer to the main-display top-left corner emergency-stops and
 locks automation. It stays locked until an explicit `resume` command.
 

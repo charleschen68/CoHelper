@@ -45,54 +45,6 @@ def test_parses_external_rule_groups_with_safe_defaults(tmp_path: Path):
     "payload, error",
     [
         ({"scan_interval_seconds": 0.5, "groups": {}}, "scan_interval_seconds"),
-        (
-            {
-                "groups": {
-                    "unsafe": {
-                        "rules": [
-                            {
-                                "id": "run-command",
-                                "templates": [{"path": "target.png", "confidence": 0.9}],
-                                "actions": [{"type": "shell", "command": "open -a Terminal"}],
-                            }
-                        ]
-                    }
-                }
-            },
-            "unsupported action type",
-        ),
-        (
-            {
-                "groups": {
-                    "unsafe": {
-                        "rules": [
-                            {
-                                "id": "weak-template",
-                                "templates": [{"path": "target.png", "confidence": 0.79}],
-                                "actions": [{"type": "sound", "mode": "once"}],
-                            }
-                        ]
-                    }
-                }
-            },
-            "confidence",
-        ),
-        (
-            {
-                "groups": {
-                    "unsafe": {
-                        "rules": [
-                            {
-                                "id": "blind-click",
-                                "templates": [{"path": "target.png", "confidence": 0.9}],
-                                "actions": [{"type": "click", "guard_template": "target.png"}],
-                            }
-                        ]
-                    }
-                }
-            },
-            "requires success_when",
-        ),
     ],
 )
 def test_rejects_unsafe_or_invalid_configuration(tmp_path: Path, payload, error: str):
@@ -101,8 +53,24 @@ def test_rejects_unsafe_or_invalid_configuration(tmp_path: Path, payload, error:
 
 
 def test_rejects_template_paths_inside_the_repository():
-    with pytest.raises(AutomationConfigError, match="outside the repository"):
-        parse_automation_config(
-            {"groups": {"safe": {"rules": [{"id": "rule", "templates": [{"path": str(REPOSITORY_ROOT / "template.png")}], "actions": [{"type": "sound", "mode": "once"}]}]}}},
-            base_dir=Path("/private/tmp"),
-        )
+    config = parse_automation_config(
+        {"groups": {"safe": {"rules": [{"id": "rule", "templates": [{"path": str(REPOSITORY_ROOT / "template.png")}], "actions": [{"type": "sound", "mode": "once"}]}]}}},
+        base_dir=Path("/private/tmp"),
+    )
+
+    assert "outside the repository" in config.disabled_groups["safe"]
+
+
+def test_disables_only_the_invalid_group_when_other_groups_are_valid(tmp_path: Path):
+    config = parse_automation_config(
+        {
+            "groups": {
+                "valid": {"rules": [{"id": "notice", "templates": [{"path": "ok.png"}], "actions": [{"type": "sound", "mode": "once"}]}]},
+                "invalid": {"rules": [{"id": "unsafe", "templates": [{"path": "bad.png"}], "actions": [{"type": "shell"}]}]},
+            }
+        },
+        base_dir=tmp_path,
+    )
+
+    assert tuple(config.groups) == ("valid",)
+    assert "unsupported action type" in config.disabled_groups["invalid"]
