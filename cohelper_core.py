@@ -49,7 +49,7 @@ DEFAULT_CONFIG = {
         "screenshot_max_age_seconds": 5,
         "confirmation_ttl_seconds": 30,
     },
-    "telegram": {"enabled": False, "allowed_user_id": 0, "credential_account": "telegram"},
+    "telegram": {"enabled": False, "allowed_user_id": 0, "allowed_chat_id": 0, "credential_account": "telegram"},
 }
 
 
@@ -171,8 +171,11 @@ class Config:
             raise ConfigError("视觉与动作超时必须大于 0")
         if confirmation_ttl != 30:
             raise ConfigError("actions.confirmation_ttl_seconds 必须固定为 30")
+        allowed_chat_id = int(self.values["telegram"].get("allowed_chat_id", 0))
         if allowed_user_id < 0 or (self.values["telegram"]["enabled"] and allowed_user_id == 0):
             raise ConfigError("启用 Telegram 时 telegram.allowed_user_id 必须为正整数")
+        if allowed_chat_id < 0 or (self.values["telegram"]["enabled"] and allowed_chat_id == 0):
+            raise ConfigError("启用 Telegram 时 telegram.allowed_chat_id 必须为正整数")
 
     def enabled(self, feature: str) -> bool:
         return bool(self.values["features"].get(feature, False))
