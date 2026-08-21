@@ -8,6 +8,7 @@ from ai_drive.automation.runtime import AutomationRuntime
 from ai_drive.automation.runner import AutomationRunner
 from ai_drive.automation.macos import QuartzFrameCapture
 from ai_drive.automation.macos_output import QuartzAutomationOutput
+from ai_drive.automation.sound import SystemAlarm
 from ai_drive.automation.engine import AutomationEngine, TriggerDecision
 from ai_drive.automation.state import AutomationStateStore, RunState
 
@@ -22,6 +23,7 @@ __all__ = (
     "AutomationRunner",
     "QuartzFrameCapture",
     "QuartzAutomationOutput",
+    "SystemAlarm",
     "GuardedActionExecutor",
     "OpenCVTemplateMatcher",
     "RunState",
