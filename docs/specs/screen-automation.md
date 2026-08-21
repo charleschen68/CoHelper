@@ -26,6 +26,7 @@ cohelper-automationctl start accept
 cohelper-automationctl stop all
 cohelper-automationctl emergency-stop
 cohelper-automationctl resume
+cohelper-automationctl ack
 ```
 
 The service creates a `0600` Unix socket at
@@ -35,6 +36,9 @@ rejected: starting requires an explicit configured group.
 
 Moving the pointer to the main-display top-left corner emergency-stops and
 locks automation. It stays locked until an explicit `resume` command.
+
+Only one continuous system alarm is active. A `while_present` alarm stops when
+its rule disappears; a `latched` alarm stops only through explicit `ack`.
 
 ## Invariants
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_drive.automation.config import AutomationConfigError, parse_automation_config
+from ai_drive.automation.config import AutomationConfigError, REPOSITORY_ROOT, parse_automation_config
 
 
 def test_parses_external_rule_groups_with_safe_defaults(tmp_path: Path):
@@ -98,3 +98,11 @@ def test_parses_external_rule_groups_with_safe_defaults(tmp_path: Path):
 def test_rejects_unsafe_or_invalid_configuration(tmp_path: Path, payload, error: str):
     with pytest.raises(AutomationConfigError, match=error):
         parse_automation_config(payload, base_dir=tmp_path)
+
+
+def test_rejects_template_paths_inside_the_repository():
+    with pytest.raises(AutomationConfigError, match="outside the repository"):
+        parse_automation_config(
+            {"groups": {"safe": {"rules": [{"id": "rule", "templates": [{"path": str(REPOSITORY_ROOT / "template.png")}], "actions": [{"type": "sound", "mode": "once"}]}]}}},
+            base_dir=Path("/private/tmp"),
+        )

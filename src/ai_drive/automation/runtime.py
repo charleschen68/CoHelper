@@ -19,13 +19,21 @@ class RuleExecutor(Protocol):
 class AutomationRuntime:
     """Owns armed groups, serial scanning, and terminal state transitions."""
 
-    def __init__(self, groups: Mapping[str, RuleGroup], state: AutomationStateStore, executor: RuleExecutor, notify=lambda _: None):
+    def __init__(
+        self,
+        groups: Mapping[str, RuleGroup],
+        state: AutomationStateStore,
+        executor: RuleExecutor,
+        notify=lambda _: None,
+        stop_alarm=lambda: None,
+    ):
         self._groups = dict(groups)
         self._state = state
         self._executor = executor
         self._armed: set[str] = set()
         self._suspended = False
         self._notify = notify
+        self._stop_alarm = stop_alarm
         self._lock = threading.RLock()
 
     def arm(self, group: str) -> None:
@@ -63,6 +71,9 @@ class AutomationRuntime:
         with self._lock:
             return self._suspended
 
+    def acknowledge_alarm(self) -> None:
+        self._stop_alarm()
+
     def armed_rules(self) -> tuple[RuleSpec, ...]:
         with self._lock:
             if self._suspended:
@@ -73,6 +84,12 @@ class AutomationRuntime:
         rules = self.armed_rules()
         if not rules:
             return None
+        if any(
+            not matches.get(rule.id, False)
+            and any(action.kind == "sound" and action.mode == "while_present" for action in rule.actions)
+            for rule in rules
+        ):
+            self._stop_alarm()
         decision = AutomationEngine(rules, self._state).scan(matches)
         if decision is None:
             return None

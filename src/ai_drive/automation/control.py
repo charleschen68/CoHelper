@@ -14,6 +14,7 @@ class AutomationService(Protocol):
     def status(self) -> str: ...
     def emergency_stop(self) -> None: ...
     def resume(self) -> None: ...
+    def acknowledge_alarm(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -91,4 +92,7 @@ class AutomationController:
         if command == "/automation_resume":
             self._service.resume()
             return "自动化已恢复为待命状态；仍须显式确认启动规则组。"
-        return "支持：/automation_status、/automation_start、/automation_confirm、/automation_stop、/automation_emergency_stop、/automation_resume"
+        if command == "/automation_ack":
+            self._service.acknowledge_alarm()
+            return "当前持续告警已确认并停止。"
+        return "支持：/automation_status、/automation_start、/automation_confirm、/automation_stop、/automation_emergency_stop、/automation_resume、/automation_ack"

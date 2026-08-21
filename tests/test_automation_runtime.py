@@ -55,3 +55,19 @@ def test_notification_failure_cannot_fail_or_repeat_a_completed_local_action(tmp
     outcome = runtime.scan({"accept": True})
 
     assert outcome is not None and outcome.succeeded
+
+
+def test_while_present_alarm_stops_when_its_rule_disappears(tmp_path: Path):
+    rule = RuleSpec("warning", (TemplateSpec(Path("/target.png"), 0.9),), (ActionSpec("sound", mode="while_present"),))
+    stopped = []
+    runtime = AutomationRuntime(
+        {"warning": RuleGroup("warning", (rule,))},
+        AutomationStateStore(tmp_path / "state.sqlite3"),
+        FakeExecutor(),
+        stop_alarm=lambda: stopped.append(True),
+    )
+    runtime.arm("warning")
+
+    runtime.scan({"warning": False})
+
+    assert stopped == [True]

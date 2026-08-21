@@ -10,7 +10,7 @@ from apps.automation_runtime import DEFAULT_SOCKET_PATH
 
 def run() -> None:
     parser = argparse.ArgumentParser(description="Control CoHelper local screen automation")
-    parser.add_argument("command", choices=("status", "start", "stop", "emergency-stop", "resume"))
+    parser.add_argument("command", choices=("status", "start", "stop", "emergency-stop", "resume", "ack"))
     parser.add_argument("group", nargs="?")
     arguments = parser.parse_args()
     client = AutomationSocketClient(DEFAULT_SOCKET_PATH)
@@ -29,6 +29,12 @@ def run() -> None:
         if arguments.group:
             parser.error("resume does not take a rule group")
         client.resume()
+        print(client.status())
+        return
+    if arguments.command == "ack":
+        if arguments.group:
+            parser.error("ack does not take a rule group")
+        client.acknowledge_alarm()
         print(client.status())
         return
     if not arguments.group:

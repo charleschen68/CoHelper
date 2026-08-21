@@ -10,6 +10,7 @@ import yaml
 
 
 DEFAULT_CONFIG_PATH = Path.home() / "Library" / "Application Support" / "cohelper" / "automation" / "rules.yaml"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 _ACTION_TYPES = frozenset({"click", "type_text", "press_key", "wait_for_template", "sound", "telegram"})
 _SOUND_MODES = frozenset({"once", "while_present", "latched"})
 
@@ -217,7 +218,10 @@ def _timeout(value: object, name: str) -> float:
 def _path(value: object, base_dir: Path, name: str) -> Path:
     text = _string(value, name)
     path = Path(text).expanduser()
-    return path if path.is_absolute() else base_dir / path
+    resolved = (path if path.is_absolute() else base_dir / path).resolve()
+    if resolved.is_relative_to(REPOSITORY_ROOT):
+        raise AutomationConfigError(f"{name} must be outside the repository")
+    return resolved
 
 
 def _offset(value: object) -> tuple[float, float]:

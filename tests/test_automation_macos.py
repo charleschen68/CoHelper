@@ -18,3 +18,15 @@ def test_quartz_frame_capture_decodes_existing_cohelper_screenshot():
 
     assert frame.shape == (2, 3, 3)
     assert frame.dtype == np.uint8
+
+
+def test_quartz_frame_capture_converts_retina_pixels_to_logical_coordinates():
+    image = Image.new("RGB", (6, 4), "red")
+    output = BytesIO()
+    image.save(output, "JPEG")
+    screenshot = Screenshot(output.getvalue(), 6, 4, 3, 2, 1, 0, "", 0, 0)
+    capture = QuartzFrameCapture(capture=lambda: screenshot)
+
+    capture.capture()
+
+    assert capture.to_logical_point((4, 2)) == (2, 1)

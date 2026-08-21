@@ -97,7 +97,7 @@ class TelegramRuntime:
             message = update.effective_message
             if user is None or chat is None or message is None or message.text is None:
                 return
-            if user.id != allowed_user_id or chat.id != allowed_chat_id or chat.type != "private":
+            if user.id != allowed_user_id or chat.id != allowed_chat_id or chat.type != "private" or getattr(message, "forward_origin", None) is not None:
                 await message.reply_text("权限不足。")
                 return
             try:

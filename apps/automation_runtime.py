@@ -48,11 +48,12 @@ def run() -> None:
     matcher = OpenCVTemplateMatcher()
     capture = QuartzFrameCapture()
     templates = {template.path: template for group in config.groups.values() for rule in group.rules for template in rule.templates}
+    runtime_ref: list[AutomationRuntime] = []
 
     def locate(path: Path):
         template = templates.get(path, TemplateSpec(path, .9))
         match = matcher.locate(capture.capture(), template)
-        return match.center if match else None
+        return capture.to_logical_point(match.center) if match else None
 
     pointer = QuartzPointerController()
     alarm = SystemAlarm()
@@ -61,6 +62,7 @@ def run() -> None:
         click=lambda point: pointer.click(ScreenPoint(*point)),
         play_sound=alarm.start,
         notify=lambda: logging.info("automation notification requested"),
+        should_stop=lambda: bool(runtime_ref) and runtime_ref[0].is_suspended(),
     )
     def wait_for(template: TemplateSpec, state_name: str, timeout_seconds: float) -> bool:
         deadline = time.monotonic() + timeout_seconds
@@ -73,7 +75,6 @@ def run() -> None:
                 return False
             time.sleep(min(.2, remaining))
 
-    runtime_ref: list[AutomationRuntime] = []
     executor = GuardedActionExecutor(
         output,
         guard_matches=lambda path: locate(path) is not None,
@@ -81,7 +82,7 @@ def run() -> None:
         wait_for=wait_for,
         should_stop=lambda: bool(runtime_ref) and runtime_ref[0].is_suspended(),
     )
-    runtime = AutomationRuntime(config.groups, state, executor, notify=queue.enqueue)
+    runtime = AutomationRuntime(config.groups, state, executor, notify=queue.enqueue, stop_alarm=alarm.stop)
     runtime_ref.append(runtime)
     for group in arguments.arm:
         runtime.arm(group)

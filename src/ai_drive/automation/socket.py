@@ -17,6 +17,7 @@ class RuntimeControl(Protocol):
     def status(self) -> str: ...
     def emergency_stop(self) -> None: ...
     def resume(self) -> None: ...
+    def acknowledge_alarm(self) -> None: ...
 
 
 class AutomationSocketProtocol:
@@ -36,6 +37,9 @@ class AutomationSocketProtocol:
                 return self._success()
             if op == "resume":
                 self._runtime.resume()
+                return self._success()
+            if op == "ack_alarm":
+                self._runtime.acknowledge_alarm()
                 return self._success()
             group = payload.get("group")
             if op not in {"arm", "disarm"} or not isinstance(group, str) or not group:
@@ -121,6 +125,9 @@ class AutomationSocketClient:
 
     def resume(self) -> None:
         self._call({"op": "resume"})
+
+    def acknowledge_alarm(self) -> None:
+        self._call({"op": "ack_alarm"})
 
     def _call(self, payload: dict[str, str]) -> str:
         response = json.loads(self._request(json.dumps(payload, ensure_ascii=False)))
