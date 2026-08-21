@@ -30,3 +30,12 @@ def test_runner_captures_once_and_matches_all_armed_rules(tmp_path: Path):
 
     assert outcome is not None and outcome.succeeded
     assert capture.calls == 1
+
+
+def test_runner_does_not_capture_when_every_group_is_disarmed(tmp_path: Path):
+    rule = RuleSpec("accept", (TemplateSpec(Path("/match.png"), .9),), (ActionSpec("sound", mode="once"),))
+    runtime = AutomationRuntime({"accept": RuleGroup("accept", (rule,))}, AutomationStateStore(tmp_path / "state.sqlite"), Executor())
+    capture = Capture()
+
+    assert AutomationRunner(runtime, (rule,), capture, Matcher()).scan_once() is None
+    assert capture.calls == 0

@@ -25,9 +25,12 @@ class AutomationRunner:
         self._matcher = matcher
 
     def scan_once(self) -> ActionOutcome | None:
+        active_rule_ids = {rule.id for rule in self._runtime.armed_rules()}
+        if not active_rule_ids:
+            return None
         frame = self._capture.capture()
         matches = {
             rule.id: any(self._matcher.locate(frame, template) is not None for template in rule.templates)
-            for rule in self._rules
+            for rule in self._rules if rule.id in active_rule_ids
         }
         return self._runtime.scan(matches)

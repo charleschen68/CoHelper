@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from ai_drive.automation.actions import GuardedActionExecutor
-from ai_drive.automation.config import ActionSpec, RuleSpec, TemplateSpec
+from ai_drive.automation.config import ActionSpec, RuleSpec, SuccessCondition, TemplateSpec
 
 
 class FakeOutput:
@@ -67,3 +67,19 @@ def test_executor_reads_keychain_reference_only_when_its_guard_matches():
     assert executor.execute(rule).succeeded
     assert reads == ["automation.secret"]
     assert output.calls == [("type", "secret-value")]
+
+
+def test_executor_marks_rule_failed_when_post_action_success_condition_times_out():
+    template = Path("/target.png")
+    rule = RuleSpec(
+        "guarded",
+        (TemplateSpec(template, 0.9),),
+        (ActionSpec("click", guard_template=template),),
+        success_when=SuccessCondition(Path("/success.png"), True, 1),
+    )
+    executor = GuardedActionExecutor(FakeOutput(), guard_matches=lambda _: True, wait_for=lambda *_: False)
+
+    outcome = executor.execute(rule)
+
+    assert outcome.succeeded is False
+    assert outcome.failed_step == "success_when"

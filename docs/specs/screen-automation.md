@@ -21,11 +21,20 @@ Start a named group explicitly; the process starts no rules by default:
 
 ```bash
 cohelper-automation --config "$HOME/Library/Application Support/cohelper/automation/rules.yaml" --arm accept
+cohelper-automationctl status
+cohelper-automationctl start accept
+cohelper-automationctl stop all
+cohelper-automationctl emergency-stop
+cohelper-automationctl resume
 ```
 
 The service creates a `0600` Unix socket at
 `~/Library/Application Support/cohelper/automation/control.sock`. Configuration
-file changes stop the service; restart it after validation.
+file changes stop the service; restart it after validation. `start all` is
+rejected: starting requires an explicit configured group.
+
+Moving the pointer to the main-display top-left corner emergency-stops and
+locks automation. It stays locked until an explicit `resume` command.
 
 ## Invariants
 

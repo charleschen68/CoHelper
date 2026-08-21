@@ -22,4 +22,21 @@ def test_runtime_arms_named_group_executes_once_and_finishes_state(tmp_path: Pat
 
     assert outcome is not None and outcome.succeeded
     assert state.snapshot("accept").run_state is RunState.SUCCEEDED
-    assert runtime.status() == "accept: armed"
+    assert runtime.status() == "service: ready\naccept: armed"
+
+
+def test_emergency_stop_disarms_and_requires_explicit_resume(tmp_path: Path):
+    rule = RuleSpec("accept", (TemplateSpec(Path("/target.png"), 0.9),), (ActionSpec("sound", mode="once"),))
+    runtime = AutomationRuntime({"accept": RuleGroup("accept", (rule,))}, AutomationStateStore(tmp_path / "state.sqlite3"), FakeExecutor())
+    runtime.arm("accept")
+    runtime.emergency_stop()
+
+    assert runtime.armed_rules() == ()
+    try:
+        runtime.arm("accept")
+    except RuntimeError as exc:
+        assert "emergency-stopped" in str(exc)
+    else:
+        raise AssertionError("arm must remain blocked until resume")
+    runtime.resume()
+    runtime.arm("accept")

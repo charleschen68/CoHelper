@@ -15,6 +15,8 @@ class RuntimeControl(Protocol):
     def arm(self, group: str) -> None: ...
     def disarm(self, group: str) -> None: ...
     def status(self) -> str: ...
+    def emergency_stop(self) -> None: ...
+    def resume(self) -> None: ...
 
 
 class AutomationSocketProtocol:
@@ -28,6 +30,12 @@ class AutomationSocketProtocol:
                 raise ValueError("request must be an object")
             op = payload.get("op")
             if op == "status":
+                return self._success()
+            if op == "emergency_stop":
+                self._runtime.emergency_stop()
+                return self._success()
+            if op == "resume":
+                self._runtime.resume()
                 return self._success()
             group = payload.get("group")
             if op not in {"arm", "disarm"} or not isinstance(group, str) or not group:
@@ -107,6 +115,12 @@ class AutomationSocketClient:
 
     def disarm(self, group: str) -> None:
         self._call({"op": "disarm", "group": group})
+
+    def emergency_stop(self) -> None:
+        self._call({"op": "emergency_stop"})
+
+    def resume(self) -> None:
+        self._call({"op": "resume"})
 
     def _call(self, payload: dict[str, str]) -> str:
         response = json.loads(self._request(json.dumps(payload, ensure_ascii=False)))

@@ -15,8 +15,9 @@ from ai_drive.macos import MacAccessibilityInspector, QuartzDesktopObserver, Qua
 from ai_drive.vision import OllamaVisionClient, VisionAnalyzer
 from ai_drive.workflow import VisualClickWorkflow
 from ai_drive.automation.control import AutomationController
+from ai_drive.automation.notifications import NotificationQueue
 from ai_drive.automation.socket import AutomationSocketClient
-from apps.automation_runtime import DEFAULT_SOCKET_PATH
+from apps.automation_runtime import DEFAULT_SOCKET_PATH, DEFAULT_STATE_PATH
 from cohelper_core import Config
 from cohelper_setup import KeychainStore
 
@@ -96,7 +97,7 @@ class TelegramRuntime:
             message = update.effective_message
             if user is None or chat is None or message is None or message.text is None:
                 return
-            if user.id != allowed_user_id or chat.id != allowed_chat_id:
+            if user.id != allowed_user_id or chat.id != allowed_chat_id or chat.type != "private":
                 await message.reply_text("权限不足。")
                 return
             try:
@@ -111,9 +112,11 @@ class TelegramRuntime:
         original_runtime_config = _runtime_config(self._config)
 
         watcher_task = None
+        notification_task = None
+        notification_queue = NotificationQueue(DEFAULT_STATE_PATH)
 
         async def post_init(application) -> None:
-            nonlocal watcher_task
+            nonlocal watcher_task, notification_task
             watcher_task = asyncio.create_task(
                 _watch_runtime_config(
                     application,
@@ -122,10 +125,16 @@ class TelegramRuntime:
                 ),
                 name="ai-drive-config-watch",
             )
+            notification_task = asyncio.create_task(
+                _deliver_notifications(application.bot, allowed_chat_id, notification_queue),
+                name="cohelper-automation-notifications",
+            )
 
         async def post_stop(application) -> None:
             del application
             await _cancel_watcher(watcher_task)
+            await _cancel_watcher(notification_task)
+            notification_queue.close()
 
         application = (
             ApplicationBuilder()
@@ -195,3 +204,15 @@ async def _cancel_watcher(task: asyncio.Task | None) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+
+async def _deliver_notifications(bot, chat_id: int, queue: NotificationQueue, *, pause=asyncio.sleep) -> None:
+    """Deliver durable text notifications, acknowledging only after Telegram accepts them."""
+    while True:
+        for notification in queue.pending():
+            try:
+                await bot.send_message(chat_id=chat_id, text=notification.text)
+            except Exception:
+                break
+            queue.acknowledge(notification.id)
+        await pause(1)

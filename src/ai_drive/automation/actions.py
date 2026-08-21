@@ -50,6 +50,12 @@ class GuardedActionExecutor:
                 self._execute_action(action)
             except (OSError, RuntimeError, ValueError) as exc:
                 return ActionOutcome(False, action.kind, str(exc))
+        if rule.success_when is not None:
+            success = rule.success_when
+            condition = "present" if success.present else "absent"
+            template = TemplateSpec(success.template, 0.9)
+            if not self._wait_for(template, condition, success.timeout_seconds):
+                return ActionOutcome(False, "success_when", "success condition timed out")
         return ActionOutcome(True)
 
     def _execute_action(self, action: ActionSpec) -> None:

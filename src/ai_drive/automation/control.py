@@ -12,6 +12,8 @@ class AutomationService(Protocol):
     def arm(self, group: str) -> None: ...
     def disarm(self, group: str) -> None: ...
     def status(self) -> str: ...
+    def emergency_stop(self) -> None: ...
+    def resume(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -68,12 +70,25 @@ class AutomationController:
                 or pending.expires_at < self._now()
             ):
                 return "启动确认不存在或已过期。"
-            self._service.arm(pending.group)
+            try:
+                self._service.arm(pending.group)
+            except ValueError:
+                return "未知规则组。"
             return f"已启动 {pending.group}。"
         if command == "/automation_stop":
             if not argument:
                 return "用法：/automation_stop <规则组|all>"
             self._pending = None
-            self._service.disarm(argument)
+            try:
+                self._service.disarm(argument)
+            except ValueError:
+                return "未知规则组。"
             return "已停止全部规则组。" if argument == "all" else f"已停止 {argument}。"
-        return "支持：/automation_status、/automation_start、/automation_confirm、/automation_stop"
+        if command == "/automation_emergency_stop":
+            self._pending = None
+            self._service.emergency_stop()
+            return "紧急停止已锁定；使用 /automation_resume 后才能再次启动。"
+        if command == "/automation_resume":
+            self._service.resume()
+            return "自动化已恢复为待命状态；仍须显式确认启动规则组。"
+        return "支持：/automation_status、/automation_start、/automation_confirm、/automation_stop、/automation_emergency_stop、/automation_resume"

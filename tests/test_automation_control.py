@@ -15,6 +15,14 @@ class FakeService:
         return "accept: disarmed"
 
 
+class RejectingService(FakeService):
+    def arm(self, group):
+        raise ValueError(group)
+
+    def disarm(self, group):
+        raise ValueError(group)
+
+
 def test_start_requires_same_private_identity_to_confirm():
     service = FakeService()
     controller = AutomationController(service, allowed_user_id=7, allowed_chat_id=9, token_factory=lambda: "A1B2")
@@ -37,3 +45,13 @@ def test_stop_all_is_immediate_and_cancels_pending_start():
     assert controller.handle("/automation_stop all", user_id=7, chat_id=9) == "已停止全部规则组。"
     assert controller.handle("/automation_confirm A1B2", user_id=7, chat_id=9) == "启动确认不存在或已过期。"
     assert service.calls == [("disarm", "all")]
+
+
+def test_unknown_group_is_rejected_without_leaking_an_internal_exception():
+    service = RejectingService()
+    controller = AutomationController(service, allowed_user_id=7, allowed_chat_id=9, token_factory=lambda: "A1B2")
+
+    controller.handle("/automation_start unknown", user_id=7, chat_id=9)
+
+    assert controller.handle("/automation_confirm A1B2", user_id=7, chat_id=9) == "未知规则组。"
+    assert controller.handle("/automation_stop unknown", user_id=7, chat_id=9) == "未知规则组。"
