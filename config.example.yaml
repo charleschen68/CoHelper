@@ -3,6 +3,8 @@ features:
   knowledge_search: true
   knowledge_answer: true
   overlay: true
+  # Explicitly opt in only after installing and validating local Whisper.
+  voice_input: false
 
 privacy:
   allow_external_api: false
@@ -50,6 +52,17 @@ vision:
   model: qwen2.5vl:7b
   base_url: http://127.0.0.1:11434
   timeout_seconds: 90
+
+voice:
+  sample_rate: 16000
+  channels: 1
+  vad_threshold: 500
+  silence_seconds: 0.8
+  # Local whisper.cpp server; no cloud fallback.
+  server_executable: whisper-server
+  model_path: ~/Library/Application Support/cohelper/voice/models/ggml-large-v3-turbo-q5_0.bin
+  server_port: 18080
+  language: auto
 
 actions:
   allowed_bundle_ids:

@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
         "knowledge_search": True,
         "knowledge_answer": True,
         "overlay": True,
+        "voice_input": False,
     },
     "privacy": {"allow_external_api": False},
     "clipboard": {"min_chars": 3, "max_chars": 20000, "poll_interval_ms": 400, "debounce_ms": 500, "process_plain_text_only": True},
@@ -44,6 +45,16 @@ DEFAULT_CONFIG = {
     "summary": {"provider": "ollama", "model": "qwen3:8b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 120, "credential_account": "summary"},
     "qmd": {"command": "qmd", "index": "index", "no_rerank": False, "models": {"embedding": "", "reranking": "", "generation": ""}},
     "vision": {"model": "qwen2.5vl:7b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 90},
+    "voice": {
+        "sample_rate": 16_000,
+        "channels": 1,
+        "vad_threshold": 500,
+        "silence_seconds": 0.8,
+        "server_executable": "whisper-server",
+        "model_path": str(APP_SUPPORT / "voice" / "models" / "ggml-large-v3-turbo-q5_0.bin"),
+        "server_port": 18080,
+        "language": "auto",
+    },
     "actions": {
         "allowed_bundle_ids": ["com.apple.Safari", "com.apple.TextEdit"],
         "allowed_capabilities": [
@@ -102,7 +113,7 @@ class Config:
         os.replace(temporary, path)
 
     def _validate(self) -> None:
-        for section_name in ("features", "privacy", "clipboard", "knowledge", "translation", "summary", "qmd", "vision", "actions", "telegram"):
+        for section_name in ("features", "privacy", "clipboard", "knowledge", "translation", "summary", "qmd", "vision", "voice", "actions", "telegram"):
             if not isinstance(self.values.get(section_name), dict):
                 raise ConfigError(f"{section_name} 必须是 mapping")
         clipboard = self.values["clipboard"]
@@ -152,6 +163,23 @@ class Config:
             raise ConfigError("vision.base_url 必须是本机 Ollama 地址")
         if vision.get("model") != "qwen2.5vl:7b":
             raise ConfigError("vision.model 必须是 qwen2.5vl:7b")
+        voice = self.values["voice"]
+        if voice.get("sample_rate") != 16_000 or voice.get("channels") != 1:
+            raise ConfigError("voice 必须使用 16 kHz mono")
+        if not isinstance(voice.get("server_executable"), str) or not voice["server_executable"].strip():
+            raise ConfigError("voice.server_executable 不能为空")
+        if not isinstance(voice.get("model_path"), str) or not voice["model_path"].strip():
+            raise ConfigError("voice.model_path 不能为空")
+        try:
+            vad_threshold = int(voice["vad_threshold"])
+            silence_seconds = float(voice["silence_seconds"])
+            server_port = int(voice["server_port"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ConfigError(f"voice 数值配置无效：{exc}") from exc
+        if vad_threshold < 0 or silence_seconds <= 0:
+            raise ConfigError("voice VAD 配置必须有效")
+        if not 1024 <= server_port <= 65535:
+            raise ConfigError("voice.server_port 必须在 1024 到 65535 之间")
         allowed = self.values["actions"].get("allowed_bundle_ids")
         if not isinstance(allowed, list) or not allowed or not all(isinstance(item, str) and item for item in allowed):
             raise ConfigError("actions.allowed_bundle_ids 必须是非空字符串列表")
