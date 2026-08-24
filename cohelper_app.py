@@ -122,6 +122,11 @@ class CohelperApp(NSObject):
         self.setup_thread = None
         return self
 
+    def _current_overlay_mask(self):
+        if self.output_overlay is None:
+            return None
+        return self.output_overlay.current_mask()
+
     def applicationDidFinishLaunching_(self, notification):
         NSApp().setActivationPolicy_(NSApplicationActivationPolicyAccessory)
         self.last_change_count = NSPasteboard.generalPasteboard().changeCount()

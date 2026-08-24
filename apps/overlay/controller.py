@@ -38,6 +38,7 @@ from ai_drive.output import (
     OverlayModel,
     OverlaySnapshot,
 )
+from ai_drive.vision import OverlayMask
 
 
 def _utf16_length(value: str) -> int:
@@ -70,6 +71,21 @@ class OutputOverlayController:
             self._panel.close()
         self._panel = None
         self._text_view = None
+
+    def current_mask(self) -> OverlayMask | None:
+        """Return the visible panel frame for screenshot masking."""
+        if self._panel is None or not self._model.snapshot().visible:
+            return None
+        return self._mask_from_frame(self._panel.frame())
+
+    @staticmethod
+    def _mask_from_frame(frame) -> OverlayMask:
+        return OverlayMask(
+            float(frame.origin.x),
+            float(frame.origin.y),
+            float(frame.size.width),
+            float(frame.size.height),
+        )
 
     def _apply(self, snapshot: OverlaySnapshot) -> None:
         if not snapshot.visible:

@@ -238,6 +238,24 @@
 - Provide the actual live overlay frame from the app, and use the masked
   capture in every visual prepare/re-capture/confirm path.
 
+## 2026-08-24 — Phase 5 live overlay mask provider started
+
+### Implemented so far
+
+- The AppKit overlay controller now exposes its visible panel frame as an
+  `OverlayMask`; hidden or closed panels return no mask.
+- `CohelperApp` exposes the current overlay provider seam for future action
+  capture construction.
+
+### Verified so far
+
+- Focused overlay-provider test: 1 passed.
+
+### Remaining
+
+- Pass this provider into the app-owned `QuartzScreenCapture` and use masked
+  screenshots across visual prepare, re-capture, and confirm.
+
 ### Remaining Phase 2 work
 
 - The menu controls, global/local `Option-Space` press/release handling, and
