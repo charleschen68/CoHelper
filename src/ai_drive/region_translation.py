@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Protocol
+from urllib.parse import urlparse
 
 from ai_drive.vision import Screenshot
 
@@ -16,6 +19,7 @@ VISION_MODEL = "qwen2.5vl:7b"
 TRANSLATION_MODEL = "translategemma:4b"
 MAX_RECOGNIZED_CHARACTERS = 20_000
 SUPPORTED_DETECTED_LANGUAGES = frozenset({"zh", "en", "mixed", "other"})
+_LOGGER = logging.getLogger(__name__)
 
 
 class TextExtractionError(ValueError):
@@ -26,7 +30,33 @@ class RegionTranslationError(ValueError):
     """Recognized text could not produce a trusted translation."""
 
 
+class NoReadableTextError(TextExtractionError):
+    pass
+
+
+class RecognizedTextTooLongError(TextExtractionError):
+    pass
+
+
+class InvalidTextResponseError(TextExtractionError):
+    pass
+
+
+class TextExtractionCancelledError(TextExtractionError):
+    pass
+
+
+class InvalidTranslationResponseError(RegionTranslationError):
+    pass
+
+
+class RegionTranslationCancelledError(RegionTranslationError):
+    pass
+
+
 class TextVisionClient(Protocol):
+    endpoint: str
+
     def analyze(
         self,
         model: str,
@@ -35,8 +65,12 @@ class TextVisionClient(Protocol):
         cancel: threading.Event | None = None,
     ) -> str: ...
 
+    def cancel(self) -> None: ...
+
 
 class TranslationClient(Protocol):
+    endpoint: str
+
     def complete(
         self,
         model: str,
@@ -44,6 +78,15 @@ class TranslationClient(Protocol):
         user: str,
         cancel: threading.Event | None = None,
     ) -> str: ...
+
+    def cancel(self) -> None: ...
+
+
+def _require_loopback_client(client, purpose: str) -> None:
+    endpoint = getattr(client, "endpoint", None)
+    host = urlparse(endpoint).hostname if isinstance(endpoint, str) else None
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError(f"{purpose} client endpoint must be loopback")
 
 
 @dataclass(frozen=True)
@@ -82,8 +125,13 @@ class RegionTranslationState(str, Enum):
 
 
 class RegionTranslationFailure(str, Enum):
-    TEXT_EXTRACTION = "text_extraction"
-    TRANSLATION = "translation"
+    NO_TEXT = "no_text"
+    TEXT_TOO_LONG = "text_too_long"
+    INVALID_TEXT_RESPONSE = "invalid_text_response"
+    VISION_UNAVAILABLE = "vision_unavailable"
+    INVALID_TRANSLATION_RESPONSE = "invalid_translation_response"
+    TRANSLATION_UNAVAILABLE = "translation_unavailable"
+    INTERNAL = "internal"
 
 
 @dataclass(frozen=True)
@@ -96,6 +144,43 @@ class RegionTranslationSnapshot:
     translation: str | None = None
     failure: RegionTranslationFailure | None = None
 
+    def __post_init__(self) -> None:
+        if self.generation < 0:
+            raise ValueError("generation must not be negative")
+        if self.state in {RegionTranslationState.IDLE, RegionTranslationState.CANCELLED}:
+            if any(
+                value is not None
+                for value in (
+                    self.screenshot,
+                    self.source,
+                    self.target,
+                    self.translation,
+                    self.failure,
+                )
+            ):
+                raise ValueError(f"{self.state.value} snapshot must not retain content")
+            return
+        if self.screenshot is None:
+            raise ValueError(f"{self.state.value} snapshot requires a screenshot")
+        if self.state is RegionTranslationState.WAITING_OCR:
+            if any(
+                value is not None
+                for value in (self.source, self.target, self.translation, self.failure)
+            ):
+                raise ValueError("waiting_ocr snapshot contains premature results")
+            return
+        if self.state is RegionTranslationState.FAILED:
+            if self.failure is None or self.translation is not None:
+                raise ValueError("failed snapshot requires only a classified failure")
+            return
+        if self.source is None or self.target is None or self.failure is not None:
+            raise ValueError(f"{self.state.value} snapshot requires source and target")
+        if self.state is RegionTranslationState.READY:
+            if not self.translation:
+                raise ValueError("ready snapshot requires a translation")
+        elif self.translation is not None:
+            raise ValueError(f"{self.state.value} snapshot contains a translation")
+
 
 class ScreenshotTextExtractor:
     """Extract reading-order text without widening the click-vision contract."""
@@ -103,6 +188,7 @@ class ScreenshotTextExtractor:
     def __init__(self, client: TextVisionClient, model: str = VISION_MODEL):
         if model != VISION_MODEL:
             raise ValueError(f"text extraction model is fixed to {VISION_MODEL}")
+        _require_loopback_client(client, "text extraction")
         self._client = client
         self._model = model
 
@@ -120,24 +206,24 @@ class ScreenshotTextExtractor:
         try:
             payload = json.loads(raw)
         except (TypeError, json.JSONDecodeError) as exc:
-            raise TextExtractionError("text extraction response is not JSON") from exc
+            raise InvalidTextResponseError("text extraction response is not JSON") from exc
         required = {"found_text", "text", "detected_language"}
         if not isinstance(payload, dict) or set(payload) != required:
-            raise TextExtractionError("text extraction response schema is invalid")
+            raise InvalidTextResponseError("text extraction response schema is invalid")
         if type(payload["found_text"]) is not bool:
-            raise TextExtractionError("found_text must be a boolean")
+            raise InvalidTextResponseError("found_text must be a boolean")
         if payload["found_text"] is False:
             if payload["text"] is not None or payload["detected_language"] is not None:
-                raise TextExtractionError("no-text response schema is invalid")
-            raise TextExtractionError("no readable text was found")
+                raise InvalidTextResponseError("no-text response schema is invalid")
+            raise NoReadableTextError("no readable text was found")
         text = payload["text"]
         language = payload["detected_language"]
         if not isinstance(text, str) or not text.strip():
-            raise TextExtractionError("text extraction returned empty text")
-        if language not in SUPPORTED_DETECTED_LANGUAGES:
-            raise TextExtractionError("text extraction returned an unsupported language")
+            raise InvalidTextResponseError("text extraction returned empty text")
+        if not isinstance(language, str) or language not in SUPPORTED_DETECTED_LANGUAGES:
+            raise InvalidTextResponseError("text extraction returned an unsupported language")
         if len(text) > MAX_RECOGNIZED_CHARACTERS:
-            raise TextExtractionError(
+            raise RecognizedTextTooLongError(
                 "recognized text exceeds the 20,000 character limit"
             )
         return ExtractedText(text.strip(), language)
@@ -145,7 +231,10 @@ class ScreenshotTextExtractor:
     @staticmethod
     def _raise_if_cancelled(cancel: threading.Event | None) -> None:
         if cancel is not None and cancel.is_set():
-            raise TextExtractionError("text extraction was cancelled")
+            raise TextExtractionCancelledError("text extraction was cancelled")
+
+    def cancel(self) -> None:
+        self._client.cancel()
 
     @staticmethod
     def _prompt() -> str:
@@ -173,6 +262,7 @@ class RegionTranslationService:
     def __init__(self, client: TranslationClient, model: str = TRANSLATION_MODEL):
         if model != TRANSLATION_MODEL:
             raise ValueError(f"translation model is fixed to {TRANSLATION_MODEL}")
+        _require_loopback_client(client, "translation")
         self._client = client
         self._model = model
 
@@ -196,13 +286,36 @@ class RegionTranslationService:
         )
         self._raise_if_cancelled(cancel)
         if not isinstance(result, str) or not result.strip():
-            raise RegionTranslationError("translation returned empty output")
-        return result.strip()
+            raise InvalidTranslationResponseError("translation returned empty output")
+        translated = result.strip()
+        missing = sorted(token for token in self._protected_tokens(source.text) if token not in translated)
+        if missing:
+            raise InvalidTranslationResponseError(
+                "translation changed or removed a protected token"
+            )
+        return translated
 
     @staticmethod
     def _raise_if_cancelled(cancel: threading.Event | None) -> None:
         if cancel is not None and cancel.is_set():
-            raise RegionTranslationError("translation was cancelled")
+            raise RegionTranslationCancelledError("translation was cancelled")
+
+    @staticmethod
+    def _protected_tokens(text: str) -> set[str]:
+        punctuation = ".,;:!?，。；：！？"
+        tokens = {
+            match.rstrip(punctuation)
+            for match in re.findall(r"https?://[^\s,，。;；]+", text)
+        }
+        tokens.update(
+            match.rstrip(punctuation)
+            for match in re.findall(r"(?<!\w)/[A-Za-z0-9._~/-]+", text)
+        )
+        tokens.update(re.findall(r"(?<!\w)\d+(?:\.\d+)*(?!\w)", text))
+        return tokens
+
+    def cancel(self) -> None:
+        self._client.cancel()
 
 
 class RegionTranslationCoordinator:
@@ -217,7 +330,10 @@ class RegionTranslationCoordinator:
         self._extractor = extractor
         self._translator = translator
         self._on_change = on_change or (lambda _snapshot: None)
-        self._lock = threading.Lock()
+        # State commit and callback delivery share one re-entrant serialization
+        # boundary. This guarantees callback order while allowing a callback to
+        # request a new target without deadlocking itself.
+        self._lock = threading.RLock()
         self._generation = 0
         self._cancel = threading.Event()
         self._snapshot = RegionTranslationSnapshot(0, RegionTranslationState.IDLE)
@@ -236,7 +352,7 @@ class RegionTranslationCoordinator:
     def start(self, screenshot: Screenshot) -> int:
         with self._lock:
             self._require_open()
-            self._cancel.set()
+            self._cancel_active_locked()
             self._generation += 1
             generation = self._generation
             cancel = threading.Event()
@@ -247,8 +363,8 @@ class RegionTranslationCoordinator:
                 screenshot=screenshot,
             )
             self._snapshot = snapshot
-        self._on_change(snapshot)
-        self._executor.submit(self._run_full, generation, screenshot, cancel)
+            self._executor.submit(self._run_full, generation, screenshot, cancel)
+            self._notify_locked(snapshot)
         return generation
 
     def retry(self) -> int | None:
@@ -263,7 +379,7 @@ class RegionTranslationCoordinator:
             current = self._snapshot
             if current.screenshot is None or current.source is None:
                 return None
-            self._cancel.set()
+            self._cancel_active_locked()
             self._generation += 1
             generation = self._generation
             cancel = threading.Event()
@@ -276,27 +392,27 @@ class RegionTranslationCoordinator:
                 target=target,
             )
             self._snapshot = snapshot
-        self._on_change(snapshot)
-        self._executor.submit(
-            self._run_translation,
-            generation,
-            current.screenshot,
-            current.source,
-            target,
-            cancel,
-        )
+            self._executor.submit(
+                self._run_translation,
+                generation,
+                current.screenshot,
+                current.source,
+                target,
+                cancel,
+            )
+            self._notify_locked(snapshot)
         return generation
 
     def cancel(self) -> int:
         with self._lock:
             self._require_open()
-            self._cancel.set()
+            self._cancel_active_locked()
             self._generation += 1
             snapshot = RegionTranslationSnapshot(
                 self._generation, RegionTranslationState.CANCELLED
             )
             self._snapshot = snapshot
-        self._on_change(snapshot)
+            self._notify_locked(snapshot)
         return snapshot.generation
 
     def close(self) -> None:
@@ -304,7 +420,7 @@ class RegionTranslationCoordinator:
             if self._closed:
                 return
             self._closed = True
-            self._cancel.set()
+            self._cancel_active_locked()
             self._generation += 1
             self._snapshot = RegionTranslationSnapshot(
                 self._generation, RegionTranslationState.CANCELLED
@@ -319,12 +435,41 @@ class RegionTranslationCoordinator:
     ) -> None:
         try:
             source = self._extractor.extract(screenshot, cancel)
-        except Exception:
+        except TextExtractionCancelledError:
+            return
+        except NoReadableTextError:
             self._fail(
                 generation,
                 screenshot,
-                RegionTranslationFailure.TEXT_EXTRACTION,
+                RegionTranslationFailure.NO_TEXT,
                 cancel,
+            )
+            return
+        except RecognizedTextTooLongError:
+            self._fail(
+                generation, screenshot, RegionTranslationFailure.TEXT_TOO_LONG, cancel
+            )
+            return
+        except InvalidTextResponseError:
+            self._fail(
+                generation,
+                screenshot,
+                RegionTranslationFailure.INVALID_TEXT_RESPONSE,
+                cancel,
+            )
+            return
+        except TextExtractionError:
+            self._fail(
+                generation,
+                screenshot,
+                RegionTranslationFailure.VISION_UNAVAILABLE,
+                cancel,
+            )
+            return
+        except Exception as exc:
+            self._report_unexpected("text extraction", exc)
+            self._fail(
+                generation, screenshot, RegionTranslationFailure.INTERNAL, cancel
             )
             return
         target = default_target_for(source)
@@ -370,11 +515,34 @@ class RegionTranslationCoordinator:
             return
         try:
             translation = self._translator.translate(source, target, cancel)
-        except Exception:
+        except RegionTranslationCancelledError:
+            return
+        except InvalidTranslationResponseError:
             self._fail(
                 generation,
                 screenshot,
-                RegionTranslationFailure.TRANSLATION,
+                RegionTranslationFailure.INVALID_TRANSLATION_RESPONSE,
+                cancel,
+                source=source,
+                target=target,
+            )
+            return
+        except RegionTranslationError:
+            self._fail(
+                generation,
+                screenshot,
+                RegionTranslationFailure.TRANSLATION_UNAVAILABLE,
+                cancel,
+                source=source,
+                target=target,
+            )
+            return
+        except Exception as exc:
+            self._report_unexpected("translation", exc)
+            self._fail(
+                generation,
+                screenshot,
+                RegionTranslationFailure.INTERNAL,
                 cancel,
                 source=source,
                 target=target,
@@ -430,8 +598,8 @@ class RegionTranslationCoordinator:
             ):
                 return False
             self._snapshot = snapshot
-        self._on_change(snapshot)
-        return True
+            self._notify_locked(snapshot)
+            return True
 
     def _is_current(self, generation: int, cancel: threading.Event) -> bool:
         with self._lock:
@@ -444,6 +612,28 @@ class RegionTranslationCoordinator:
     def _require_open(self) -> None:
         if self._closed:
             raise RuntimeError("region translation coordinator is closed")
+
+    def _cancel_active_locked(self) -> None:
+        self._cancel.set()
+        for service in (self._extractor, self._translator):
+            try:
+                service.cancel()
+            except Exception as exc:
+                self._report_unexpected("transport cancellation", exc)
+
+    def _notify_locked(self, snapshot: RegionTranslationSnapshot) -> None:
+        try:
+            self._on_change(snapshot)
+        except Exception as exc:
+            self._report_unexpected("state callback", exc)
+
+    @staticmethod
+    def _report_unexpected(operation: str, exc: Exception) -> None:
+        _LOGGER.error(
+            "region translation %s failed with sanitized error type %s",
+            operation,
+            type(exc).__name__,
+        )
 
 
 __all__ = [
