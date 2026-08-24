@@ -256,6 +256,24 @@
 - Pass this provider into the app-owned `QuartzScreenCapture` and use masked
   screenshots across visual prepare, re-capture, and confirm.
 
+## 2026-08-24 — Phase 5 app-owned masked capture wiring started
+
+### Implemented so far
+
+- `voice_direct_actions` now requires both voice input and the overlay feature
+  at config validation time.
+- When enabled, CoHelperApp creates an app-owned `QuartzScreenCapture` with
+  the live overlay mask provider; when disabled, no capture adapter is created.
+
+### Verified so far
+
+- Focused configuration dependency tests: 2 passed.
+
+### Remaining
+
+- Inject this capture into the guarded visual workflow and ensure prepare,
+  inference re-capture, and confirm all use masked screenshots.
+
 ### Remaining Phase 2 work
 
 - The menu controls, global/local `Option-Space` press/release handling, and

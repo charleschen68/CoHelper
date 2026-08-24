@@ -145,6 +145,10 @@ class Config:
                 raise ConfigError(f"features.{feature} 必须是 boolean")
         if self.values["features"].get("knowledge_answer") and not self.values["features"].get("knowledge_search"):
             raise ConfigError("knowledge_answer 依赖 knowledge_search")
+        if self.values["features"].get("voice_direct_actions") and not self.values["features"].get("voice_input"):
+            raise ConfigError("voice_direct_actions 依赖 voice_input")
+        if self.values["features"].get("voice_direct_actions") and not self.values["features"].get("overlay"):
+            raise ConfigError("voice_direct_actions 依赖 overlay")
         for section_name in ("translation", "summary"):
             section = self.values[section_name]
             if section.get("provider") not in {"ollama", "openai-compatible"}:

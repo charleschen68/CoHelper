@@ -80,6 +80,13 @@ def test_voice_command_aliases_are_validated_and_remain_unexecuted_configuration
         Config({"voice": {"command_aliases": {"refresh": ["刷新 Safari"]}}})
 
 
+def test_voice_direct_actions_require_voice_input_and_overlay():
+    with pytest.raises(ConfigError, match="voice_input"):
+        Config({"features": {"voice_direct_actions": True}})
+    with pytest.raises(ConfigError, match="overlay"):
+        Config({"features": {"voice_direct_actions": True, "voice_input": True, "overlay": False}})
+
+
 def test_voice_input_rejects_non_16khz_mono_configuration():
     with pytest.raises(ConfigError, match="16 kHz mono"):
         Config({"voice": {"sample_rate": 48_000}})

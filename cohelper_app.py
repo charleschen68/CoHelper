@@ -112,6 +112,7 @@ class CohelperApp(NSObject):
         self.voice_vad = None
         self.voice_speech = None
         self.voice_sentence_buffer = None
+        self.direct_screen_capture = None
         try:
             self.voice_router = VoiceCommandRouter(self.config.section("voice")["command_aliases"])
         except VoiceCommandRouterError as exc:
@@ -137,6 +138,8 @@ class CohelperApp(NSObject):
             self._start_voice_feature()
         if self.startup_error is None and self.config.enabled("voice_output"):
             self._start_speech_feature()
+        if self.startup_error is None and self.config.enabled("voice_direct_actions"):
+            self._start_voice_direct_action_feature()
         self._start_clipboard_timer()
         if self.startup_error:
             self._show_config_error()
@@ -350,6 +353,22 @@ class CohelperApp(NSObject):
             capture.stop()
         if voice is not None:
             voice.cancel()
+
+    def _start_voice_direct_action_feature(self):
+        if self.direct_screen_capture is not None or not self.config.enabled("voice_direct_actions"):
+            return
+        if self.output_overlay is None or self.voice_input is None:
+            self._handle_voice_error(RuntimeError("voice direct actions require active voice input and overlay"))
+            return
+        try:
+            from ai_drive.macos import QuartzScreenCapture
+
+            self.direct_screen_capture = QuartzScreenCapture(self._current_overlay_mask)
+        except Exception as exc:
+            self._handle_voice_error(exc)
+
+    def _stop_voice_direct_action_feature(self):
+        self.direct_screen_capture = None
 
     def startVoice_(self, sender):
         if self.voice_input is None or self.voice_capture is None:
@@ -1008,6 +1027,7 @@ class CohelperApp(NSObject):
         previous_voice_enabled = self.config.enabled("voice_input")
         previous_voice_output_enabled = self.config.enabled("voice_output")
         previous_voice_direct_enabled = self.config.enabled("voice_direct_actions")
+        previous_voice_direct_enabled = self.config.enabled("voice_direct_actions")
         self.config = candidate
         config_generation = self.coordinator.update_config(candidate)
         self.output_generation = max(self.output_generation, config_generation)
@@ -1023,6 +1043,10 @@ class CohelperApp(NSObject):
             self._start_speech_feature()
         elif previous_voice_output_enabled and not candidate.enabled("voice_output"):
             self._stop_speech_feature()
+        if candidate.enabled("voice_direct_actions") and not previous_voice_direct_enabled:
+            self._start_voice_direct_action_feature()
+        elif previous_voice_direct_enabled and not candidate.enabled("voice_direct_actions"):
+            self._stop_voice_direct_action_feature()
         if candidate.enabled("voice_direct_actions") and not previous_voice_direct_enabled:
             self._show_info("语音直行动作", "已启用配置开关；在完成权限、目标复核和紧急停止检查前不会执行动作。")
         if hasattr(self, "timer"):
