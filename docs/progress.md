@@ -286,10 +286,12 @@
   automatic confirmation or click is wired.
 - A prepared action is retained for an explicit menu confirmation; the confirm
   path calls the existing guarded workflow and reports success/failure.
+- Added independent menu emergency-stop and manual-resume handlers; emergency
+  state blocks both prepare and confirm, and cancels the pending action.
 
 ### Verified so far
 
-- Focused workflow configuration tests: 3 passed.
+- Focused workflow/safety tests: 4 passed.
 
 ### Remaining
 

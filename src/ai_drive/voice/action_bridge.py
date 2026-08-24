@@ -84,7 +84,16 @@ class VoiceCommandActionBridge:
             self._pending[utterance_id] = result
         return result
 
-    def confirm(self, prepared: PreparedVoiceAction, *, user_id: int, chat_id: int):
+    def confirm(
+        self,
+        prepared: PreparedVoiceAction,
+        *,
+        user_id: int,
+        chat_id: int,
+        overlay_masked: bool = False,
+    ):
+        if self._safety_gate is not None:
+            self._safety_gate.assert_ready(overlay_masked=overlay_masked)
         self._take_pending(prepared, user_id=user_id, chat_id=chat_id)
         return self._workflow.confirm(prepared.action_id, user_id, chat_id)
 

@@ -263,6 +263,8 @@ class CohelperApp(NSObject):
         menu.addItemWithTitle_action_keyEquivalent_("结束并提交语音", "finishVoice:", "")
         menu.addItemWithTitle_action_keyEquivalent_("取消语音", "cancelVoice:", "")
         menu.addItemWithTitle_action_keyEquivalent_("确认语音操作", "confirmVoiceAction:", "")
+        menu.addItemWithTitle_action_keyEquivalent_("紧急停止语音操作", "emergencyStopVoiceActions:", "")
+        menu.addItemWithTitle_action_keyEquivalent_("恢复语音操作", "resumeVoiceActions:", "")
         menu.addItemWithTitle_action_keyEquivalent_("环境诊断与设置", "runDiagnostics:", "")
         menu.addItemWithTitle_action_keyEquivalent_("模型设置", "configureModels:", "")
         menu.addItemWithTitle_action_keyEquivalent_("高级配置", "configureAdvanced:", "")
@@ -424,6 +426,7 @@ class CohelperApp(NSObject):
                     pending,
                     user_id=pending.user_id,
                     chat_id=pending.chat_id,
+                    overlay_masked=self._current_overlay_mask() is not None,
                 )
                 self.pending_voice_action = None
                 self._publish_output(
@@ -450,6 +453,44 @@ class CohelperApp(NSObject):
             "语音操作确认",
             "当前没有可确认的语音操作。",
             severity=OutputSeverity.WARNING,
+        )
+
+    def emergencyStopVoiceActions_(self, sender):
+        if self.voice_action_safety is not None:
+            self.voice_action_safety.emergency_stop()
+        if self.pending_voice_action is not None and self.voice_action_bridge is not None:
+            pending = self.pending_voice_action
+            try:
+                self.voice_action_bridge.cancel(pending, user_id=pending.user_id, chat_id=pending.chat_id)
+            except Exception:
+                pass
+            self.pending_voice_action = None
+        self.output_generation += 1
+        self._publish_output(
+            OutputKind.EMERGENCY_STOP,
+            OutputSource.ACTIONS,
+            "语音操作紧急停止",
+            "所有待确认语音操作已停止；需要手动恢复。",
+            severity=OutputSeverity.CRITICAL,
+            generation=self.output_generation,
+        )
+
+    def resumeVoiceActions_(self, sender):
+        if self.voice_action_safety is None:
+            return
+        try:
+            self.voice_action_safety.resume(manual=True)
+        except Exception as exc:
+            self._handle_voice_error(exc)
+            return
+        self.output_generation += 1
+        self._publish_output(
+            OutputKind.EMERGENCY_CLEARED,
+            OutputSource.ACTIONS,
+            "语音操作安全状态",
+            "已手动恢复语音操作。",
+            severity=OutputSeverity.INFO,
+            generation=self.output_generation,
         )
 
     def startVoice_(self, sender):

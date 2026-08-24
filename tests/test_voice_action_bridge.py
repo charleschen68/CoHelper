@@ -53,9 +53,9 @@ def test_confirm_is_explicit_and_one_time():
     bridge = VoiceCommandActionBridge(workflow, {"refresh_safari": "刷新 Safari"}, safety_gate=VoiceActionSafetyGate())
     prepared = bridge.prepare(command_route(), utterance_id="voice-1", user_id=7, chat_id=9, overlay_masked=True)
 
-    assert bridge.confirm(prepared, user_id=7, chat_id=9) == "clicked"
+    assert bridge.confirm(prepared, user_id=7, chat_id=9, overlay_masked=True) == "clicked"
     with pytest.raises(VoiceActionBridgeError, match="unknown"):
-        bridge.confirm(prepared, user_id=7, chat_id=9)
+        bridge.confirm(prepared, user_id=7, chat_id=9, overlay_masked=True)
 
 
 def test_confirm_rejects_a_different_user_or_chat_before_workflow_call():
@@ -64,7 +64,7 @@ def test_confirm_rejects_a_different_user_or_chat_before_workflow_call():
     prepared = bridge.prepare(command_route(), utterance_id="voice-1", user_id=7, chat_id=9, overlay_masked=True)
 
     with pytest.raises(VoiceActionBridgeError, match="another identity"):
-        bridge.confirm(prepared, user_id=8, chat_id=9)
+        bridge.confirm(prepared, user_id=8, chat_id=9, overlay_masked=True)
     assert workflow.calls == [("prepare", "刷新 Safari", 7, 9)]
 
 
