@@ -253,6 +253,7 @@ def test_region_translation_rejects_mutated_machine_verifiable_tokens():
     [
         "版本 11.2.30，访问 https://example.com",
         "版本 1.2.3，访问 https://example.com.evil",
+        "版本 1.2.3，访问 https://example.com，另加 9.9",
     ],
 )
 def test_protected_tokens_require_exact_boundaries(translated):
@@ -702,6 +703,29 @@ def test_callback_can_synchronously_wait_for_another_thread_to_read_snapshot():
         assert callback_errors == []
     finally:
         coordinator.close()
+
+
+def test_callback_can_synchronously_wait_for_cross_thread_close():
+    callback_finished = threading.Event()
+    callback_errors = []
+    coordinator = None
+
+    def on_change(item):
+        if item.state is not RegionTranslationState.READY:
+            return
+        closer = threading.Thread(target=coordinator.close)
+        closer.start()
+        closer.join(0.5)
+        if closer.is_alive():
+            callback_errors.append("close was blocked by callback delivery")
+        callback_finished.set()
+
+    coordinator = RegionTranslationCoordinator(
+        ImmediateExtractor(), ImmediateTranslator(), on_change
+    )
+    coordinator.start(screenshot())
+    assert callback_finished.wait(1)
+    assert callback_errors == []
 
 
 def test_close_cannot_shutdown_executor_between_state_commit_and_submission():

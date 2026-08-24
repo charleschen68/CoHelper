@@ -334,7 +334,7 @@ class RegionTranslationService:
         translated = result.strip()
         source_tokens = Counter(self._protected_tokens(source.text))
         translated_tokens = Counter(self._protected_tokens(translated))
-        if any(translated_tokens[token] < count for token, count in source_tokens.items()):
+        if translated_tokens != source_tokens:
             raise InvalidTranslationResponseError(
                 "translation changed or removed a protected token"
             )
@@ -383,7 +383,6 @@ class RegionTranslationCoordinator:
         # Callbacks are ordered without running arbitrary UI code under the
         # state lock.
         self._lock = threading.RLock()
-        self._delivery_lock = threading.RLock()
         self._generation = 0
         self._cancel = threading.Event()
         self._snapshot = RegionTranslationSnapshot(0, RegionTranslationState.IDLE)
@@ -489,16 +488,15 @@ class RegionTranslationCoordinator:
         return snapshot.generation
 
     def close(self) -> None:
-        with self._delivery_lock:
-            with self._lock:
-                if self._closed:
-                    return
-                self._closed = True
-                self._cancel_active_locked()
-                self._generation += 1
-                self._snapshot = RegionTranslationSnapshot(
-                    self._generation, RegionTranslationState.CANCELLED
-                )
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._cancel_active_locked()
+            self._generation += 1
+            self._snapshot = RegionTranslationSnapshot(
+                self._generation, RegionTranslationState.CANCELLED
+            )
         self._executor.shutdown(wait=False, cancel_futures=True)
         self._callback_executor.shutdown(wait=False, cancel_futures=True)
 
@@ -765,14 +763,13 @@ class RegionTranslationCoordinator:
         self._callback_executor.submit(self._deliver, snapshot)
 
     def _deliver(self, snapshot: RegionTranslationSnapshot) -> None:
-        with self._delivery_lock:
-            with self._lock:
-                if self._closed or snapshot.generation != self._generation:
-                    return
-            try:
-                self._on_change(snapshot)
-            except Exception as exc:
-                self._report_unexpected("state callback", exc)
+        with self._lock:
+            if self._closed or snapshot.generation != self._generation:
+                return
+        try:
+            self._on_change(snapshot)
+        except Exception as exc:
+            self._report_unexpected("state callback", exc)
 
     @staticmethod
     def _report_unexpected(operation: str, exc: Exception) -> None:

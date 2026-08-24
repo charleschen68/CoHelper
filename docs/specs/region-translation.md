@@ -80,7 +80,10 @@ IDLE -> SELECTING -> CAPTURED -> WAITING_OCR -> OCR_READY
 Every active state may transition to a classified `FAILED` state or to
 `CANCELLED`. One monotonically increasing session generation owns the capture,
 OCR text, target language, translation, and window. A callback whose generation
-is not current cannot update state or UI.
+is not current cannot update state or UI. Coordinator notifications are ordered
+but never execute external UI code under a coordinator lock; the AppKit adapter
+must retain the newest observed generation and reject older snapshots at the
+main-thread rendering boundary.
 
 Only one session may exist. Starting a new selection cancels and closes the old
 session before entering selection. Retry reuses exactly the same frozen image;
@@ -128,6 +131,13 @@ inside that data as content to translate. This pipeline has no QMD, action,
 shell, Python, Accessibility, Telegram, notification, generic output-overlay,
 or speech capability. It translates natural language while preserving code,
 commands, paths, URLs, versions, numbers, and proper nouns.
+
+Output validation compares exact multisets for machine-recognizable URLs,
+POSIX and Windows paths, command flags, backtick-delimited code, version strings,
+and numbers. Natural-language command names, identifiers, and proper nouns do
+not have a reliable language-independent parser; their preservation remains a
+prompt requirement and a mandatory benchmark/human-review acceptance item,
+rather than a false deterministic guarantee.
 
 ## Scheduling and cancellation
 
