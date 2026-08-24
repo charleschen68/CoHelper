@@ -21,6 +21,13 @@ def test_defaults_and_feature_flags():
     config = Config({"features": {"translation": False}})
     assert not config.enabled("translation")
     assert config.enabled("knowledge_search")
+    assert config.enabled("overlay")
+
+
+def test_overlay_feature_can_be_disabled_without_truthy_string_coercion():
+    assert Config({"features": {"overlay": False}}).enabled("overlay") is False
+    with pytest.raises(ConfigError, match="features.overlay"):
+        Config({"features": {"overlay": "false"}})
 
 
 def test_invalid_clipboard_bounds_are_rejected():
@@ -91,7 +98,10 @@ def test_missing_sources_emit_insufficient_knowledge_answer(monkeypatch):
     monkeypatch.setattr(QmdClient, "search", lambda self, query, cancel=None: [])
     coordinator = TaskCoordinator(
         config,
-        TaskCallbacks(on_summary=answers.append, on_finished=finished.set),
+        TaskCallbacks(
+            on_summary=lambda _generation, result: answers.append(result),
+            on_finished=lambda _generation: finished.set(),
+        ),
     )
 
     coordinator.submit("flink")
@@ -103,17 +113,49 @@ def test_missing_sources_emit_insufficient_knowledge_answer(monkeypatch):
 def test_disabled_modules_do_not_start(monkeypatch):
     config = Config({"features": {"translation": False, "knowledge_search": False, "knowledge_summary": False}})
     started = []
-    coordinator = TaskCoordinator(config, TaskCallbacks(on_started=lambda _: started.append(True)))
+    coordinator = TaskCoordinator(
+        config, TaskCallbacks(on_started=lambda _generation, _text: started.append(True))
+    )
     coordinator.submit("hello")
     threading.Event().wait(0.02)
     assert not started
+
+
+def test_task_callbacks_carry_the_submission_generation():
+    config = Config(
+        {"features": {"translation": True, "knowledge_search": False, "knowledge_answer": False}}
+    )
+    started = []
+    coordinator = TaskCoordinator(
+        config,
+        TaskCallbacks(on_started=lambda generation, text: started.append((generation, text))),
+    )
+
+    first = coordinator.submit("first request")
+    second = coordinator.submit("second request")
+
+    assert (first, second) == (1, 2)
+    assert started == [(1, "first request"), (2, "second request")]
+
+
+def test_ignored_short_input_does_not_cancel_work_or_consume_a_generation():
+    coordinator = TaskCoordinator(Config({"clipboard": {"min_chars": 3}}))
+
+    assert coordinator.submit("x") is None
+    assert coordinator._generation == 0
 
 
 def test_oversized_clipboard_is_reported_without_starting_modules():
     config = Config({"clipboard": {"max_chars": 10}})
     started = []
     rejected = []
-    coordinator = TaskCoordinator(config, TaskCallbacks(on_started=started.append, on_rejected=rejected.append))
+    coordinator = TaskCoordinator(
+        config,
+        TaskCallbacks(
+            on_started=lambda _generation, text: started.append(text),
+            on_rejected=lambda _generation, reason: rejected.append(reason),
+        ),
+    )
     coordinator.submit("x" * 11)
     assert started == []
     assert "超过配置上限" in rejected[0]
@@ -193,7 +235,10 @@ def test_stale_blocked_translation_does_not_callback():
         }
     )
     results = []
-    coordinator = TaskCoordinator(config, TaskCallbacks(on_translation=results.append))
+    coordinator = TaskCoordinator(
+        config,
+        TaskCallbacks(on_translation=lambda _generation, result: results.append(result)),
+    )
     cancelled = threading.Event()
     cancelled.set()
     coordinator._translation(0, "hello", cancelled)

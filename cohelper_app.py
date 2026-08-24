@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import subprocess
 import threading
+import time
+import uuid
 from pathlib import Path
 
 import objc
@@ -14,6 +16,7 @@ from AppKit import (
     NSApp,
     NSApplication,
     NSApplicationActivationPolicyAccessory,
+    NSApplicationDidChangeScreenParametersNotification,
     NSButton,
     NSButtonTypeSwitch,
     NSColor,
@@ -44,11 +47,23 @@ from AppKit import (
     NSFloatingWindowLevel,
     NSMakeRect,
 )
-from Foundation import NSObject, NSString, NSTimer, NSURL
+from Foundation import NSNotificationCenter, NSObject, NSString, NSTimer, NSURL
 from PyObjCTools import AppHelper
 
+from ai_drive.output import (
+    OutputEvent,
+    OutputEventSocketProtocol,
+    OutputEventUnixSocketServer,
+    OutputKind,
+    OutputSeverity,
+    OutputSource,
+)
+from apps.overlay import OutputOverlayController
 from cohelper_core import APP_SUPPORT, CONFIG_PATH, Config, ConfigError, TaskCallbacks, TaskCoordinator
 from cohelper_setup import EnvironmentDoctor, KeychainStore, SetupInstaller, SetupState, resolve_command
+
+
+OUTPUT_SOCKET_PATH = APP_SUPPORT / "output" / "events.sock"
 
 
 class CohelperApp(NSObject):
@@ -72,6 +87,11 @@ class CohelperApp(NSObject):
         self.paused = self.first_run or self.startup_error is not None
         self.window = None
         self.text_view = None
+        self.output_generation = 0
+        self.output_overlay = None
+        self.output_overlay_timer = None
+        self.output_event_server = None
+        self.output_screen_observer_registered = False
         self.status_item: NSStatusItem | None = None
         self.setup_installer = None
         self.setup_thread = None
@@ -81,6 +101,8 @@ class CohelperApp(NSObject):
         NSApp().setActivationPolicy_(NSApplicationActivationPolicyAccessory)
         self.last_change_count = NSPasteboard.generalPasteboard().changeCount()
         self._build_status_item()
+        if self.startup_error is None and self.config.enabled("overlay"):
+            self._start_output_feature()
         self._start_clipboard_timer()
         if self.startup_error:
             self._show_config_error()
@@ -90,15 +112,101 @@ class CohelperApp(NSObject):
                 self.config.save()
             self.runDiagnostics_(None)
 
+    def _start_output_feature(self):
+        if self.output_overlay is not None or not self.config.enabled("overlay"):
+            return
+        self.output_overlay = OutputOverlayController()
+        self.output_overlay_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.5, self, "tickOutputOverlay:", None, True
+        )
+        NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
+            self,
+            b"screenParametersChanged:",
+            NSApplicationDidChangeScreenParametersNotification,
+            None,
+        )
+        self.output_screen_observer_registered = True
+        try:
+            self.output_event_server = OutputEventUnixSocketServer(
+                OUTPUT_SOCKET_PATH,
+                OutputEventSocketProtocol(
+                    lambda event: AppHelper.callAfter(self._publish_received_output, event)
+                ),
+            )
+            self.output_event_server.start()
+        except Exception as exc:
+            self.output_event_server = None
+            self._publish_output(
+                OutputKind.ERROR,
+                OutputSource.SYSTEM,
+                "输出事件通道不可用",
+                f"{type(exc).__name__}: {exc}",
+                severity=OutputSeverity.ERROR,
+            )
+
+    def _stop_output_feature(self):
+        if self.output_screen_observer_registered:
+            NSNotificationCenter.defaultCenter().removeObserver_name_object_(
+                self,
+                NSApplicationDidChangeScreenParametersNotification,
+                None,
+            )
+            self.output_screen_observer_registered = False
+        if self.output_overlay_timer is not None:
+            self.output_overlay_timer.invalidate()
+            self.output_overlay_timer = None
+        server, self.output_event_server = self.output_event_server, None
+        overlay, self.output_overlay = self.output_overlay, None
+        try:
+            if server is not None:
+                server.stop()
+        finally:
+            if overlay is not None:
+                overlay.close()
+
+    def screenParametersChanged_(self, notification):
+        if self.output_overlay is not None:
+            self.output_overlay.reposition()
+
     def _callbacks(self):
         return TaskCallbacks(
-            on_started=lambda text: AppHelper.callAfter(self._show_started, text),
-            on_translation=lambda result: AppHelper.callAfter(self._append_result, "翻译", result.text or result.error),
-            on_knowledge=lambda hits: AppHelper.callAfter(self._append_sources, hits),
-            on_summary=lambda result: AppHelper.callAfter(self._append_result, "知识回答 / 总结", result.text or result.error),
-            on_error=lambda error: AppHelper.callAfter(self._append_result, "错误", error),
-            on_rejected=lambda reason: AppHelper.callAfter(self._show_rejected, reason),
-            on_finished=lambda: AppHelper.callAfter(self._set_status, "cohelper"),
+            on_started=lambda generation, text: AppHelper.callAfter(
+                self._show_started, generation, text
+            ),
+            on_translation=lambda generation, result: AppHelper.callAfter(
+                self._append_task_result,
+                generation,
+                "翻译",
+                result.text or result.error,
+                OutputKind.TRANSLATION,
+                OutputSource.CLIPBOARD,
+                OutputSeverity.INFO if result.text else OutputSeverity.ERROR,
+            ),
+            on_knowledge=lambda generation, hits: AppHelper.callAfter(
+                self._append_sources, generation, hits
+            ),
+            on_summary=lambda generation, result: AppHelper.callAfter(
+                self._append_task_result,
+                generation,
+                "知识回答 / 总结",
+                result.text or result.error,
+                OutputKind.ANSWER_FINAL,
+                OutputSource.KNOWLEDGE,
+                OutputSeverity.INFO if result.text else OutputSeverity.ERROR,
+            ),
+            on_error=lambda generation, error: AppHelper.callAfter(
+                self._append_task_result,
+                generation,
+                "错误",
+                error,
+                OutputKind.ERROR,
+                OutputSource.SYSTEM,
+                OutputSeverity.ERROR,
+            ),
+            on_rejected=lambda generation, reason: AppHelper.callAfter(
+                self._show_rejected, generation, reason
+            ),
+            on_finished=lambda generation: AppHelper.callAfter(self._finish_task, generation),
         )
 
     def _build_status_item(self):
@@ -163,7 +271,9 @@ class CohelperApp(NSObject):
         self.pending_text = ""
         self.debounce_timer = None
         if text:
-            self.coordinator.submit(text)
+            generation = self.coordinator.submit(text)
+            if generation is not None:
+                self.output_generation = max(self.output_generation, generation)
 
     def applicationWillTerminate_(self, notification):
         self.coordinator.cancel()
@@ -171,6 +281,18 @@ class CohelperApp(NSObject):
             self.setup_installer.cancel()
         if self.debounce_timer is not None:
             self.debounce_timer.invalidate()
+        self._stop_output_feature()
+
+    def tickOutputOverlay_(self, timer):
+        if self.output_overlay is not None:
+            self.output_overlay.tick()
+
+    def _publish_received_output(self, event):
+        if self.output_overlay is not None:
+            try:
+                self.output_overlay.publish(event)
+            except Exception:
+                self._set_status("cohelper (输出错误)")
 
     def _ensure_window(self):
         if self.window is not None:
@@ -191,7 +313,10 @@ class CohelperApp(NSObject):
         scroll.setDocumentView_(self.text_view)
         self.window.contentView().addSubview_(scroll)
 
-    def _show_started(self, text):
+    def _show_started(self, generation, text):
+        if generation < self.output_generation:
+            return
+        self.output_generation = generation
         self._ensure_window()
         modules = []
         if self.config.enabled("translation"):
@@ -202,11 +327,29 @@ class CohelperApp(NSObject):
         self.text_view.setString_(f"原文\n{text}\n\n{status}……")
         self.window.makeKeyAndOrderFront_(None)
         NSApp().activateIgnoringOtherApps_(True)
+        self._publish_output(
+            OutputKind.TEXT_INPUT,
+            OutputSource.CLIPBOARD,
+            "剪贴板输入",
+            text,
+            generation=self.output_generation,
+        )
 
-    def _show_rejected(self, reason):
+    def _show_rejected(self, generation, reason):
+        if generation < self.output_generation:
+            return
+        self.output_generation = generation
         self._ensure_window()
         self.text_view.setString_(reason)
         self.window.makeKeyAndOrderFront_(None)
+        self._publish_output(
+            OutputKind.ERROR,
+            OutputSource.CLIPBOARD,
+            "已跳过剪贴板内容",
+            reason,
+            severity=OutputSeverity.WARNING,
+            generation=self.output_generation,
+        )
 
     def _append_result(self, title, content):
         if self.text_view is None:
@@ -214,7 +357,22 @@ class CohelperApp(NSObject):
         current = self.text_view.string() or ""
         self.text_view.setString_(current + f"\n\n===== {title} =====\n{content}")
 
-    def _append_sources(self, hits):
+    def _append_task_result(self, generation, title, content, kind, source, severity):
+        if generation != self.output_generation:
+            return
+        self._append_result(title, content)
+        self._publish_output(
+            kind,
+            source,
+            title,
+            content or "",
+            severity=severity,
+            generation=generation,
+        )
+
+    def _append_sources(self, generation, hits):
+        if generation != self.output_generation:
+            return
         if self.text_view is None:
             return
         if hits:
@@ -229,8 +387,56 @@ class CohelperApp(NSObject):
             for uri in uris:
                 link_range = ns_content.rangeOfString_(uri)
                 self.text_view.textStorage().addAttribute_value_range_(NSLinkAttributeName, NSURL.URLWithString_(uri), link_range)
+            self._publish_output(
+                OutputKind.KNOWLEDGE_SOURCES,
+                OutputSource.KNOWLEDGE,
+                "知识库来源",
+                "\n".join(uris),
+                generation=self.output_generation,
+            )
         else:
             self._append_result("知识库来源", "未找到可靠知识库来源")
+            self._publish_output(
+                OutputKind.KNOWLEDGE_SOURCES,
+                OutputSource.KNOWLEDGE,
+                "知识库来源",
+                "未找到可靠知识库来源",
+                severity=OutputSeverity.WARNING,
+                generation=self.output_generation,
+            )
+
+    def _finish_task(self, generation):
+        if generation == self.output_generation:
+            self._set_status("cohelper")
+
+    def _publish_output(
+        self,
+        kind,
+        source,
+        title,
+        message,
+        *,
+        severity=OutputSeverity.INFO,
+        generation=None,
+        metadata=None,
+    ):
+        if self.output_overlay is None:
+            return
+        bounded_message = str(message)
+        if len(bounded_message) > 16_384:
+            bounded_message = bounded_message[:16_383] + "…"
+        event = OutputEvent(
+            event_id=uuid.uuid4().hex,
+            kind=kind,
+            source=source,
+            occurred_at=time.time(),
+            title=str(title),
+            message=bounded_message,
+            severity=severity,
+            generation=generation,
+            metadata=dict(metadata or {}),
+        )
+        self.output_overlay.publish(event)
 
     def _set_status(self, title):
         if self.status_item:
@@ -325,7 +531,12 @@ class CohelperApp(NSObject):
 
         y = 1840
         y = self._advanced_section(document, y, "运行模块", "控制剪贴板内容会经过哪些处理，以及是否允许访问外部 API。")
-        for key, title in (("translation", "启用翻译"), ("knowledge_search", "启用知识库检索"), ("knowledge_answer", "启用知识回答/总结")):
+        for key, title in (
+            ("translation", "启用翻译"),
+            ("knowledge_search", "启用知识库检索"),
+            ("knowledge_answer", "启用知识回答/总结"),
+            ("overlay", "启用左侧输出浮层与本机输出接口"),
+        ):
             y = self._advanced_switch(document, y, key, title, self.config.enabled(key))
         y = self._advanced_switch(document, y, "allow_external_api", "允许外部 API（默认关闭）", bool(self.config.section("privacy")["allow_external_api"]))
 
@@ -490,8 +701,8 @@ class CohelperApp(NSObject):
             for key, control in self.advanced_controls.items():
                 if key == "allow_external_api":
                     candidate.section("privacy")["allow_external_api"] = control.state() == 1
-                elif key in {"translation", "knowledge_search", "knowledge_answer", "process_plain_text_only"}:
-                    target = "features" if key in {"translation", "knowledge_search", "knowledge_answer"} else "clipboard"
+                elif key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "process_plain_text_only"}:
+                    target = "features" if key in {"translation", "knowledge_search", "knowledge_answer", "overlay"} else "clipboard"
                     candidate.section(target)[key] = control.state() == 1
                 elif key in {"qmd.no_rerank", "telegram.enabled"}:
                     section_name, field = key.split(".")
@@ -540,8 +751,14 @@ class CohelperApp(NSObject):
                     pass
             self._show_error("配置保存失败", str(exc))
             return
+        previous_overlay_enabled = self.config.enabled("overlay")
         self.config = candidate
-        self.coordinator.update_config(candidate)
+        config_generation = self.coordinator.update_config(candidate)
+        self.output_generation = max(self.output_generation, config_generation)
+        if candidate.enabled("overlay") and not previous_overlay_enabled:
+            self._start_output_feature()
+        elif previous_overlay_enabled and not candidate.enabled("overlay"):
+            self._stop_output_feature()
         if hasattr(self, "timer"):
             self.timer.invalidate()
             self._start_clipboard_timer()

@@ -100,13 +100,17 @@ def test_config_update_cancels_inflight_task_and_new_task_uses_new_snapshot(monk
 
     monkeypatch.setattr(cohelper_core, "ModelService", BlockingModelService)
     config = Config({"features": {"translation": True, "knowledge_search": False, "knowledge_answer": False}, "translation": {"model": "old"}})
-    coordinator = TaskCoordinator(config, TaskCallbacks(on_translation=lambda result: results.append(result)))
+    coordinator = TaskCoordinator(
+        config,
+        TaskCallbacks(on_translation=lambda _generation, result: results.append(result)),
+    )
 
     coordinator.submit("enough text")
     assert started.wait(1)
-    coordinator.update_config(Config({"features": {"translation": True, "knowledge_search": False, "knowledge_answer": False}, "translation": {"model": "new"}}))
+    config_generation = coordinator.update_config(Config({"features": {"translation": True, "knowledge_search": False, "knowledge_answer": False}, "translation": {"model": "new"}}))
     release.set()
     __import__("time").sleep(0.05)
 
     assert seen_models == [("translation", "old")]
     assert results == []
+    assert config_generation == 2

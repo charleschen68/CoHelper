@@ -30,21 +30,25 @@ dev = ["pytest>=8", "pyinstaller>=6"]
 [tool.setuptools]
 py-modules = ["cohelper", "cohelper_app", "cohelper_core", "cohelper_setup"]
 packages = [
-    "ai_drive",
-    "ai_drive.automation",
+  "ai_drive",
+  "ai_drive.automation",
+  "ai_drive.output",
   "ai_drive.actions",
   "ai_drive.vision",
   "apps",
   "apps.clipboard_helper",
+  "apps.overlay",
   "apps.telegram_bridge",
 ]
 
 [tool.setuptools.package-dir]
 ai_drive = "src/ai_drive"
 "ai_drive.actions" = "src/ai_drive/actions"
+"ai_drive.output" = "src/ai_drive/output"
 "ai_drive.vision" = "src/ai_drive/vision"
 apps = "apps"
 "apps.clipboard_helper" = "apps/clipboard_helper"
+"apps.overlay" = "apps/overlay"
 "apps.telegram_bridge" = "apps/telegram_bridge"
 
 [tool.pytest.ini_options]

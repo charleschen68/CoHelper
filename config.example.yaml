@@ -2,6 +2,7 @@ features:
   translation: true
   knowledge_search: true
   knowledge_answer: true
+  overlay: true
 
 privacy:
   allow_external_api: false

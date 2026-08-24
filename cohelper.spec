@@ -10,6 +10,7 @@ hidden_imports = (
     + collect_submodules("telegram")
     + collect_submodules("ai_drive")
     + collect_submodules("apps.telegram_bridge")
+    + collect_submodules("apps.overlay")
     + collect_submodules("ai_drive.automation")
 )
 
