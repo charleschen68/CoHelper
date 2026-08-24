@@ -65,6 +65,8 @@ from ai_drive.voice import (
     VoiceActivityDetector,
     VoiceInputCoordinator,
     VoiceInputError,
+    AnswerSentenceBuffer,
+    MacSpeechOutput,
     WhisperCppWorker,
     WhisperCppWorkerConfig,
 )
@@ -105,6 +107,8 @@ class CohelperApp(NSObject):
         self.voice_hotkey = None
         self.voice_permission_pending = False
         self.voice_vad = None
+        self.voice_speech = None
+        self.voice_sentence_buffer = None
         self.status_item: NSStatusItem | None = None
         self.setup_installer = None
         self.setup_thread = None
@@ -118,6 +122,8 @@ class CohelperApp(NSObject):
             self._start_output_feature()
         if self.startup_error is None and self.config.enabled("voice_input"):
             self._start_voice_feature()
+        if self.startup_error is None and self.config.enabled("voice_output"):
+            self._start_speech_feature()
         self._start_clipboard_timer()
         if self.startup_error:
             self._show_config_error()
@@ -209,6 +215,9 @@ class CohelperApp(NSObject):
                 OutputSource.KNOWLEDGE,
                 OutputSeverity.INFO if result.text else OutputSeverity.ERROR,
             ),
+            on_summary_delta=lambda generation, delta: AppHelper.callAfter(
+                self._append_answer_delta, generation, delta
+            ),
             on_error=lambda generation, error: AppHelper.callAfter(
                 self._append_task_result,
                 generation,
@@ -276,6 +285,47 @@ class CohelperApp(NSObject):
         except Exception as exc:
             self._handle_voice_error(exc)
 
+    def _start_speech_feature(self):
+        if self.voice_speech is not None or not self.config.enabled("voice_output"):
+            return
+        self.voice_sentence_buffer = AnswerSentenceBuffer(max_pending=1)
+        self.voice_speech = MacSpeechOutput(on_error=lambda error: AppHelper.callAfter(self._handle_speech_error, error))
+
+    def _stop_speech_feature(self):
+        speech, self.voice_speech = self.voice_speech, None
+        self.voice_sentence_buffer = None
+        if speech is not None:
+            speech.interrupt()
+
+    def _interrupt_speech(self):
+        if self.voice_sentence_buffer is not None:
+            self.voice_sentence_buffer.clear()
+        if self.voice_speech is not None:
+            self.voice_speech.interrupt()
+
+    def _speak_answer(self, generation: int, text: str):
+        if self.voice_speech is None or self.voice_sentence_buffer is None:
+            return
+        for sentence_generation, sentence in self.voice_sentence_buffer.feed(generation, text):
+            self.voice_speech.speak(sentence_generation, sentence)
+        for sentence_generation, sentence in self.voice_sentence_buffer.finish(generation):
+            self.voice_speech.speak(sentence_generation, sentence)
+
+    def _speak_answer_delta(self, generation: int, delta: str):
+        if self.voice_speech is None or self.voice_sentence_buffer is None:
+            return
+        for sentence_generation, sentence in self.voice_sentence_buffer.feed(generation, delta):
+            self.voice_speech.speak(sentence_generation, sentence)
+
+    def _finish_answer_speech(self, generation: int):
+        if self.voice_speech is None or self.voice_sentence_buffer is None:
+            return
+        for sentence_generation, sentence in self.voice_sentence_buffer.finish(generation):
+            self.voice_speech.speak(sentence_generation, sentence)
+
+    def _handle_speech_error(self, error):
+        self._publish_output(OutputKind.ERROR, OutputSource.SYSTEM, "语音输出错误", str(error), severity=OutputSeverity.ERROR)
+
     def _stop_voice_feature(self):
         hotkey, self.voice_hotkey = self.voice_hotkey, None
         capture, self.voice_capture = self.voice_capture, None
@@ -296,6 +346,7 @@ class CohelperApp(NSObject):
             return
         if self.voice_permission_pending:
             return
+        self._interrupt_speech()
         self.voice_permission_pending = True
         self.voice_capture.request_permission(
             lambda granted: AppHelper.callAfter(self._start_voice_after_permission, bool(granted))
@@ -431,6 +482,7 @@ class CohelperApp(NSObject):
             self.debounce_timer.invalidate()
         self._stop_output_feature()
         self._stop_voice_feature()
+        self._stop_speech_feature()
 
     def tickOutputOverlay_(self, timer):
         if self.output_overlay is not None:
@@ -510,6 +562,8 @@ class CohelperApp(NSObject):
         if generation != self.output_generation:
             return
         self._append_result(title, content)
+        if kind is OutputKind.ANSWER_FINAL and severity is OutputSeverity.INFO:
+            self._finish_answer_speech(generation)
         self._publish_output(
             kind,
             source,
@@ -518,6 +572,19 @@ class CohelperApp(NSObject):
             severity=severity,
             generation=generation,
         )
+
+    def _append_answer_delta(self, generation, delta):
+        if generation != self.output_generation:
+            return
+        self._publish_output(
+            OutputKind.ANSWER_DELTA,
+            OutputSource.KNOWLEDGE,
+            "知识回答",
+            delta,
+            severity=OutputSeverity.INFO,
+            generation=generation,
+        )
+        self._speak_answer_delta(generation, delta)
 
     def _append_sources(self, generation, hits):
         if generation != self.output_generation:
@@ -686,6 +753,7 @@ class CohelperApp(NSObject):
             ("knowledge_answer", "启用知识回答/总结"),
             ("overlay", "启用左侧输出浮层与本机输出接口"),
             ("voice_input", "启用本地语音输入（需要 Whisper 与麦克风权限）"),
+            ("voice_output", "启用本地答案朗读（macOS 系统语音）"),
         ):
             y = self._advanced_switch(document, y, key, title, self.config.enabled(key))
         y = self._advanced_switch(document, y, "allow_external_api", "允许外部 API（默认关闭）", bool(self.config.section("privacy")["allow_external_api"]))
@@ -851,8 +919,8 @@ class CohelperApp(NSObject):
             for key, control in self.advanced_controls.items():
                 if key == "allow_external_api":
                     candidate.section("privacy")["allow_external_api"] = control.state() == 1
-                elif key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "process_plain_text_only"}:
-                    target = "features" if key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input"} else "clipboard"
+                elif key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output", "process_plain_text_only"}:
+                    target = "features" if key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output"} else "clipboard"
                     candidate.section(target)[key] = control.state() == 1
                 elif key in {"qmd.no_rerank", "telegram.enabled"}:
                     section_name, field = key.split(".")
@@ -903,6 +971,7 @@ class CohelperApp(NSObject):
             return
         previous_overlay_enabled = self.config.enabled("overlay")
         previous_voice_enabled = self.config.enabled("voice_input")
+        previous_voice_output_enabled = self.config.enabled("voice_output")
         self.config = candidate
         config_generation = self.coordinator.update_config(candidate)
         self.output_generation = max(self.output_generation, config_generation)
@@ -914,6 +983,10 @@ class CohelperApp(NSObject):
             self._start_voice_feature()
         elif previous_voice_enabled and not candidate.enabled("voice_input"):
             self._stop_voice_feature()
+        if candidate.enabled("voice_output") and not previous_voice_output_enabled:
+            self._start_speech_feature()
+        elif previous_voice_output_enabled and not candidate.enabled("voice_output"):
+            self._stop_speech_feature()
         if hasattr(self, "timer"):
             self.timer.invalidate()
             self._start_clipboard_timer()

@@ -92,10 +92,40 @@
 
 - Focused voice and configuration tests: 25 passed.
 - Python compilation and diff checks pass for the new voice modules.
-- Full repository regression after whisper.cpp/Ollama integration: 178 passed.
+- Full repository regression after whisper.cpp/Ollama integration: 179 passed.
 - Real macOS test audio was transcribed by the local `whisper-server` as
   “打开Safari的刷新按钮。”; local `qwen3:8b` also returned a successful
   response through Ollama.
+- Added bounded incremental Whisper snapshots with one in-flight request and
+  generation invalidation for late partial results; the scheduling seam is
+  covered by focused tests.
+- Real large-v3-turbo-q5_0 verification produced both partial and final text;
+  the test audio produced “打开Safari的刷新按钮。” in both stages.
+
+## 2026-08-24 — Phase 3 voice answer output started
+
+### Implemented so far
+
+- Added a sentence buffer that speaks complete Chinese/English answer
+  sentences, bounds pending speech, and discards old answer generations.
+- Added an interruptible macOS `AVSpeechSynthesizer` adapter using the local
+  Chinese system voice. New voice input immediately interrupts queued speech.
+- Added independent `features.voice_output: false` gating and wired successful
+  local `qwen3:8b` answer results into sentence-level speech output.
+- Added local Ollama streaming chat support. Answer deltas now flow through the
+  generation-aware overlay and sentence buffer; cancellation closes the old
+  stream before a newer request can publish.
+
+### Verified so far
+
+- Focused Phase 3 speech/stream tests: 4 passed.
+- Full repository regression: 183 passed.
+
+### Remaining Phase 3 work
+
+- Add sentence-level speech acceptance on the real macOS app and verify TTS
+  interruption while a new recording starts. The streaming/cancellation path
+  is covered by tests but has not yet had live GUI acceptance.
 
 ### Remaining Phase 2 work
 

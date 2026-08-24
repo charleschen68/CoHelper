@@ -5,6 +5,7 @@ features:
   overlay: true
   # Explicitly opt in only after installing and validating local Whisper.
   voice_input: false
+  voice_output: false
 
 privacy:
   allow_external_api: false

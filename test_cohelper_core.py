@@ -8,6 +8,7 @@ from cohelper_core import (
     ConfigError,
     KnowledgeHit,
     ModelService,
+    OllamaProvider,
     QmdClient,
     TaskCoordinator,
     TaskCallbacks,
@@ -180,6 +181,41 @@ def test_model_redirect_is_rejected(monkeypatch):
     monkeypatch.setattr("requests.post", lambda *args, **kwargs: Response())
     result = ModelService(Config({}), "translation").run("hello", TRANSLATION_SYSTEM)
     assert "重定向" in result.error
+
+
+def test_ollama_stream_emits_deltas_and_closes_response(monkeypatch):
+    class Response:
+        is_redirect = False
+        status_code = 200
+        closed = False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self, decode_unicode=False):
+            assert decode_unicode is True
+            return [
+                '{"message":{"content":"第一句。"},"done":false}',
+                '{"message":{"content":"第二句。"},"done":true}',
+            ]
+
+        def close(self):
+            self.closed = True
+
+    response = Response()
+    monkeypatch.setattr("requests.post", lambda *args, **kwargs: response)
+    deltas = list(
+        OllamaProvider().stream(
+            "system",
+            "user",
+            model="qwen3:8b",
+            base_url="http://127.0.0.1:11434",
+            timeout=10,
+        )
+    )
+
+    assert deltas == ["第一句。", "第二句。"]
+    assert response.closed is True
 
 
 def test_same_model_requests_are_serialized():

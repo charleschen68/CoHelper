@@ -37,6 +37,7 @@ DEFAULT_CONFIG = {
         "knowledge_answer": True,
         "overlay": True,
         "voice_input": False,
+        "voice_output": False,
     },
     "privacy": {"allow_external_api": False},
     "clipboard": {"min_chars": 3, "max_chars": 20000, "poll_interval_ms": 400, "debounce_ms": 500, "process_plain_text_only": True},
@@ -268,6 +269,9 @@ class ModelProvider:
     def complete(self, system: str, user: str, *, model: str, base_url: str, timeout: int, api_key: str | None = None) -> str:
         raise NotImplementedError
 
+    def stream(self, system: str, user: str, *, model: str, base_url: str, timeout: int, api_key: str | None = None, cancel: threading.Event | None = None):
+        yield self.complete(system, user, model=model, base_url=base_url, timeout=timeout, api_key=api_key)
+
 
 class OllamaProvider(ModelProvider):
     def complete(self, system: str, user: str, *, model: str, base_url: str, timeout: int, api_key: str | None = None) -> str:
@@ -285,6 +289,35 @@ class OllamaProvider(ModelProvider):
             return str(body["message"]["content"])
         except (KeyError, TypeError) as exc:
             raise RuntimeError(f"Ollama 响应缺少 message.content: {body!r}") from exc
+
+    def stream(self, system: str, user: str, *, model: str, base_url: str, timeout: int, api_key: str | None = None, cancel: threading.Event | None = None):
+        response = requests.post(
+            f"{base_url.rstrip('/')}/api/chat",
+            json={"model": model, "stream": True, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]},
+            timeout=timeout,
+            allow_redirects=False,
+            stream=True,
+        )
+        try:
+            if response.is_redirect or 300 <= getattr(response, "status_code", 200) < 400:
+                raise RuntimeError("模型端点返回重定向，已阻止转发知识库内容")
+            response.raise_for_status()
+            for raw in response.iter_lines(decode_unicode=True):
+                if cancel and cancel.is_set():
+                    return
+                if not raw:
+                    continue
+                body = json.loads(raw)
+                if not isinstance(body, dict):
+                    raise RuntimeError("Ollama 流响应不是 JSON object")
+                message = body.get("message") or {}
+                delta = message.get("content")
+                if delta:
+                    yield str(delta)
+                if body.get("done"):
+                    return
+        finally:
+            response.close()
 
 
 class OpenAICompatibleProvider(ModelProvider):
@@ -365,6 +398,42 @@ class ModelService:
                 lock.release()
             return ModelResult(text=text, provider=self.section["provider"], elapsed_seconds=time.monotonic() - started)
         except Exception as exc:  # boundary: provider errors become user-visible results
+            return ModelResult(error=f"{type(exc).__name__}: {exc}", provider=self.section["provider"], elapsed_seconds=time.monotonic() - started)
+
+    def stream(self, prompt: str, system: str, cancel: threading.Event | None, on_delta: Callable[[str], None]) -> ModelResult:
+        if self.kind == "summary" and not self.config.enabled("knowledge_answer"):
+            return ModelResult(provider="disabled")
+        started = time.monotonic()
+        try:
+            lock = _model_lock(str(self.section["provider"]), str(self.section["base_url"]), str(self.section["model"]))
+            while not lock.acquire(timeout=0.1):
+                if cancel and cancel.is_set():
+                    return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
+            if cancel and cancel.is_set():
+                lock.release()
+                return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
+            api_key = None
+            text_parts = []
+            try:
+                if self.section["provider"] == "openai-compatible":
+                    api_key = KeychainStore().get(str(self.section.get("credential_account", self.kind)))
+                for delta in self.provider.stream(
+                    system,
+                    prompt,
+                    model=self.section["model"],
+                    base_url=self.section["base_url"],
+                    timeout=int(self.section["timeout_seconds"]),
+                    api_key=api_key,
+                    cancel=cancel,
+                ):
+                    if cancel and cancel.is_set():
+                        return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
+                    text_parts.append(delta)
+                    on_delta(delta)
+            finally:
+                lock.release()
+            return ModelResult(text="".join(text_parts), provider=self.section["provider"], elapsed_seconds=time.monotonic() - started)
+        except Exception as exc:
             return ModelResult(error=f"{type(exc).__name__}: {exc}", provider=self.section["provider"], elapsed_seconds=time.monotonic() - started)
 
 
@@ -505,6 +574,7 @@ class TaskCallbacks:
     on_translation: Callable[[int, ModelResult], None] = lambda _generation, _result: None
     on_knowledge: Callable[[int, list[KnowledgeHit]], None] = lambda _generation, _hits: None
     on_summary: Callable[[int, ModelResult], None] = lambda _generation, _result: None
+    on_summary_delta: Callable[[int, str], None] = lambda _generation, _delta: None
     on_error: Callable[[int, str], None] = lambda _generation, _error: None
     on_rejected: Callable[[int, str], None] = lambda _generation, _reason: None
     on_finished: Callable[[int], None] = lambda _generation: None
@@ -626,7 +696,14 @@ class TaskCoordinator:
                 if self._external_blocked(prompt, "summary", config):
                     result = ModelResult(error="知识库来源包含疑似敏感信息，外部 API 被隐私策略阻止", provider="blocked")
                 else:
-                    result = ModelService(config, "summary").run(prompt, SUMMARY_SYSTEM, cancel)
+                    result = ModelService(config, "summary").stream(
+                        prompt,
+                        SUMMARY_SYSTEM,
+                        cancel,
+                        lambda delta: self.callbacks.on_summary_delta(generation, delta)
+                        if self._current(generation, cancel)
+                        else None,
+                    )
             if self._current(generation, cancel):
                 self.callbacks.on_summary(generation, result)
         except Exception as exc:

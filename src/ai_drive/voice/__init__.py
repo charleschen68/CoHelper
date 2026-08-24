@@ -10,6 +10,7 @@ from .audio import (
     WhisperCppWorkerConfig,
 )
 from .input import VoiceInputCoordinator, VoiceInputError
+from .speech import AnswerSentenceBuffer, MacSpeechOutput, SpeechOutputError
 from .hotkey import PushToTalkController, PushToTalkEvent
 from .session import VoiceSession, VoiceSessionError, VoiceSessionState, VoiceTranscript
 
@@ -27,6 +28,9 @@ __all__ = [
     "WhisperCppWorkerConfig",
     "VoiceInputCoordinator",
     "VoiceInputError",
+    "AnswerSentenceBuffer",
+    "MacSpeechOutput",
+    "SpeechOutputError",
     "PushToTalkController",
     "PushToTalkEvent",
 ]

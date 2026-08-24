@@ -56,6 +56,7 @@ def test_vision_model_and_confirmation_ttl_are_fixed():
 def test_voice_input_is_disabled_by_default_and_validates_audio_boundary():
     config = Config({})
     assert config.enabled("voice_input") is False
+    assert config.enabled("voice_output") is False
     assert config.section("voice")["sample_rate"] == 16_000
 
     enabled = Config({"features": {"voice_input": True}})

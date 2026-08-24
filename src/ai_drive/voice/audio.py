@@ -58,6 +58,10 @@ class PcmRingBuffer:
             self._size = 0
             return result
 
+    def snapshot(self) -> bytes:
+        with self._lock:
+            return b"".join(self._chunks)
+
 
 class VoiceActivityDetector:
     """Energy VAD; it only reports boundaries and never submits text."""
@@ -144,6 +148,11 @@ class WhisperCppWorker:
         self._session_id = ""
         self._lock = threading.Lock()
         self._finalizing = False
+        self._stopping = threading.Event()
+        self._generation = 0
+        self._partial_inflight = False
+        self._last_partial_at = 0.0
+        self._partial_sequence = 0
 
     @property
     def is_running(self) -> bool:
@@ -180,6 +189,11 @@ class WhisperCppWorker:
             self._session_id = session_id
             self._buffer.read()
             self._finalizing = False
+            self._stopping.clear()
+            self._generation += 1
+            self._partial_inflight = False
+            self._last_partial_at = 0.0
+            self._partial_sequence = 0
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             if not self.is_running:
@@ -197,6 +211,29 @@ class WhisperCppWorker:
         if not self.is_running:
             raise VoiceWorkerError("whisper worker is not running")
         self._buffer.append(pcm)
+        now = time.monotonic()
+        with self._lock:
+            ready = (
+                not self._finalizing
+                and not self._partial_inflight
+                and self._buffer.size_bytes >= 16_000 * 2
+                and now - self._last_partial_at >= 0.75
+            )
+            if ready:
+                self._partial_inflight = True
+                self._last_partial_at = now
+                self._partial_sequence += 1
+                generation = self._generation
+                sequence = self._partial_sequence
+                session_id = self._session_id
+                snapshot = self._buffer.snapshot()
+        if ready:
+            threading.Thread(
+                target=self._transcribe,
+                args=(session_id, snapshot, False, generation, sequence),
+                name="cohelper-whisper-partial",
+                daemon=True,
+            ).start()
 
     def finish(self) -> None:
         with self._lock:
@@ -207,14 +244,18 @@ class WhisperCppWorker:
             self._finalizing = True
             pcm = self._buffer.read()
             session_id = self._session_id
+            generation = self._generation
         threading.Thread(
             target=self._transcribe,
-            args=(session_id, pcm),
+            args=(session_id, pcm, True, generation, self._partial_sequence + 1),
             name="cohelper-whisper-inference",
             daemon=True,
         ).start()
 
     def stop(self) -> None:
+        self._stopping.set()
+        with self._lock:
+            self._generation += 1
         process, self._process = self._process, None
         self._buffer.read()
         self._finalizing = False
@@ -227,10 +268,12 @@ class WhisperCppWorker:
             process.kill()
             process.wait(timeout=1)
 
-    def _transcribe(self, session_id: str, pcm: bytes) -> None:
+    def _transcribe(self, session_id: str, pcm: bytes, finalized: bool, generation: int, sequence: int) -> None:
         try:
             if not pcm:
-                raise VoiceWorkerError("recording contains no PCM")
+                if finalized:
+                    raise VoiceWorkerError("recording contains no PCM")
+                return
             wav = _pcm_to_wav(pcm)
             response = requests.post(
                 self._url("/inference"),
@@ -246,10 +289,21 @@ class WhisperCppWorker:
             payload = response.json()
             text = payload.get("text") if isinstance(payload, dict) else None
             if not isinstance(text, str) or not text.strip():
-                raise VoiceWorkerError("Whisper returned an empty transcript")
-            self._on_transcript(VoiceTranscript(session_id, 1, " ".join(text.split()), True, time.time()))
+                if finalized:
+                    raise VoiceWorkerError("Whisper returned an empty transcript")
+                return
+            if self._stopping.is_set() or generation != self._generation:
+                return
+            self._on_transcript(
+                VoiceTranscript(session_id, sequence, " ".join(text.split()), finalized, time.time())
+            )
         except (OSError, ValueError, requests.RequestException, VoiceWorkerError) as exc:
-            self._report_error(VoiceWorkerError(f"Whisper transcription failed: {type(exc).__name__}"))
+            if finalized and not self._stopping.is_set():
+                self._report_error(VoiceWorkerError(f"Whisper transcription failed: {type(exc).__name__}"))
+        finally:
+            if not finalized:
+                with self._lock:
+                    self._partial_inflight = False
 
     def _url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._config.port}{path}"
