@@ -7,6 +7,7 @@ from ai_drive.voice import (
     VoiceCommandActionBridge,
     VoiceRoute,
     VoiceRouteKind,
+    VoiceActionSafetyGate,
 )
 
 
@@ -37,9 +38,11 @@ def command_route():
 
 def test_prepare_uses_guarded_workflow_but_does_not_confirm():
     workflow = Workflow()
-    bridge = VoiceCommandActionBridge(workflow, {"refresh_safari": "刷新 Safari"})
+    bridge = VoiceCommandActionBridge(
+        workflow, {"refresh_safari": "刷新 Safari"}, safety_gate=VoiceActionSafetyGate()
+    )
 
-    prepared = bridge.prepare(command_route(), utterance_id="voice-1", user_id=7, chat_id=9)
+    prepared = bridge.prepare(command_route(), utterance_id="voice-1", user_id=7, chat_id=9, overlay_masked=True)
 
     assert prepared.action_id == "A1"
     assert workflow.calls == [("prepare", "刷新 Safari", 7, 9)]
@@ -47,12 +50,22 @@ def test_prepare_uses_guarded_workflow_but_does_not_confirm():
 
 def test_confirm_is_explicit_and_one_time():
     workflow = Workflow()
-    bridge = VoiceCommandActionBridge(workflow, {"refresh_safari": "刷新 Safari"})
-    prepared = bridge.prepare(command_route(), utterance_id="voice-1", user_id=7, chat_id=9)
+    bridge = VoiceCommandActionBridge(workflow, {"refresh_safari": "刷新 Safari"}, safety_gate=VoiceActionSafetyGate())
+    prepared = bridge.prepare(command_route(), utterance_id="voice-1", user_id=7, chat_id=9, overlay_masked=True)
 
     assert bridge.confirm(prepared, user_id=7, chat_id=9) == "clicked"
     with pytest.raises(VoiceActionBridgeError, match="unknown"):
         bridge.confirm(prepared, user_id=7, chat_id=9)
+
+
+def test_confirm_rejects_a_different_user_or_chat_before_workflow_call():
+    workflow = Workflow()
+    bridge = VoiceCommandActionBridge(workflow, {"refresh_safari": "刷新 Safari"}, safety_gate=VoiceActionSafetyGate())
+    prepared = bridge.prepare(command_route(), utterance_id="voice-1", user_id=7, chat_id=9, overlay_masked=True)
+
+    with pytest.raises(VoiceActionBridgeError, match="another identity"):
+        bridge.confirm(prepared, user_id=8, chat_id=9)
+    assert workflow.calls == [("prepare", "刷新 Safari", 7, 9)]
 
 
 def test_non_command_missing_instruction_and_disabled_paths_are_rejected():

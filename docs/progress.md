@@ -188,15 +188,20 @@
   instructions and calls the existing guarded workflow's `prepare` method.
 - Confirmation remains a separate explicit call; one utterance can hold only
   one pending action, and knowledge routes or missing instructions are rejected.
+- Pending actions now retain the originating user/chat identity and reject
+  confirmation or cancellation from another identity before calling the
+  guarded workflow.
+- Added a fail-closed safety gate requiring an overlay-masked action screenshot
+  and manual resume after emergency stop before prepare can proceed.
 
 ### Verified so far
 
-- Focused action-bridge tests: 3 passed.
+- Focused action/safety tests: 6 passed.
 
 ### Remaining
 
-- Connect the bridge to the app's action service with user/session identity,
-  fresh screenshot revalidation, target masking, and emergency-stop state.
+- Connect the bridge to the app's action service with real masked capture,
+  fresh screenshot revalidation, and the durable application emergency state.
 
 ### Remaining Phase 2 work
 

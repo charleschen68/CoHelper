@@ -14,6 +14,7 @@ from .speech import AnswerSentenceBuffer, MacSpeechOutput, SpeechOutputError
 from .router import VoiceCommandRouter, VoiceCommandRouterError, VoiceRoute, VoiceRouteKind
 from .direct import VoiceDirectActionError, VoiceDirectIntent, VoiceDirectTarget, VoiceDirectTargetStore
 from .action_bridge import VoiceActionBridgeError, VoiceCommandActionBridge, PreparedVoiceAction
+from .safety import VoiceActionSafetyError, VoiceActionSafetyGate
 from .hotkey import PushToTalkController, PushToTalkEvent
 from .session import VoiceSession, VoiceSessionError, VoiceSessionState, VoiceTranscript
 
@@ -45,6 +46,8 @@ __all__ = [
     "VoiceActionBridgeError",
     "VoiceCommandActionBridge",
     "PreparedVoiceAction",
+    "VoiceActionSafetyError",
+    "VoiceActionSafetyGate",
     "PushToTalkController",
     "PushToTalkEvent",
 ]

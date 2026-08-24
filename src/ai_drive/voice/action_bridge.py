@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .router import VoiceRoute, VoiceRouteKind
+from .safety import VoiceActionSafetyGate
 
 
 class VoiceActionBridgeError(ValueError):
@@ -26,6 +27,8 @@ class PreparedVoiceAction:
     utterance_id: str
     command: str
     action_id: str
+    user_id: int
+    chat_id: int
 
 
 class VoiceCommandActionBridge:
@@ -37,10 +40,12 @@ class VoiceCommandActionBridge:
         instructions: dict[str, str],
         *,
         enabled: bool = True,
+        safety_gate: VoiceActionSafetyGate | None = None,
     ):
         self._workflow = workflow
         self._instructions = dict(instructions)
         self._enabled = enabled
+        self._safety_gate = safety_gate
         self._pending: dict[str, PreparedVoiceAction] = {}
         self._lock = threading.Lock()
 
@@ -51,11 +56,14 @@ class VoiceCommandActionBridge:
         utterance_id: str,
         user_id: int,
         chat_id: int,
+        overlay_masked: bool = False,
     ) -> PreparedVoiceAction:
         if not self._enabled:
             raise VoiceActionBridgeError("voice direct actions are disabled")
         if not utterance_id.strip():
             raise VoiceActionBridgeError("utterance_id must be non-empty")
+        if self._safety_gate is not None:
+            self._safety_gate.assert_ready(overlay_masked=overlay_masked)
         if route.kind is not VoiceRouteKind.COMMAND or not route.command:
             raise VoiceActionBridgeError("only a routed command can prepare an action")
         instruction = self._instructions.get(route.command)
@@ -68,7 +76,7 @@ class VoiceCommandActionBridge:
         action_id = getattr(prepared, "action_id", None)
         if not isinstance(action_id, str) or not action_id:
             raise VoiceActionBridgeError("guarded workflow returned no action id")
-        result = PreparedVoiceAction(utterance_id, route.command, action_id)
+        result = PreparedVoiceAction(utterance_id, route.command, action_id, user_id, chat_id)
         with self._lock:
             if utterance_id in self._pending:
                 self._workflow.cancel(action_id, user_id, chat_id)
@@ -77,16 +85,18 @@ class VoiceCommandActionBridge:
         return result
 
     def confirm(self, prepared: PreparedVoiceAction, *, user_id: int, chat_id: int):
-        self._take_pending(prepared)
+        self._take_pending(prepared, user_id=user_id, chat_id=chat_id)
         return self._workflow.confirm(prepared.action_id, user_id, chat_id)
 
     def cancel(self, prepared: PreparedVoiceAction, *, user_id: int, chat_id: int) -> None:
-        self._take_pending(prepared)
+        self._take_pending(prepared, user_id=user_id, chat_id=chat_id)
         self._workflow.cancel(prepared.action_id, user_id, chat_id)
 
-    def _take_pending(self, prepared: PreparedVoiceAction) -> None:
+    def _take_pending(self, prepared: PreparedVoiceAction, *, user_id: int, chat_id: int) -> None:
         with self._lock:
             current = self._pending.get(prepared.utterance_id)
             if current != prepared:
                 raise VoiceActionBridgeError("voice action is unknown or already consumed")
+            if prepared.user_id != user_id or prepared.chat_id != chat_id:
+                raise VoiceActionBridgeError("voice action belongs to another identity")
             self._pending.pop(prepared.utterance_id)
