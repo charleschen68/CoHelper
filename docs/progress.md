@@ -221,6 +221,23 @@
 - Supply the real overlay frame to `QuartzScreenCapture`, then wire masked
   captures through prepare, re-capture, and confirm paths.
 
+## 2026-08-24 — Phase 5 Quartz capture mask injection started
+
+### Implemented so far
+
+- `QuartzScreenCapture` now accepts an overlay-mask provider and applies the
+  mask immediately after capture, with an explicit seam for re-masking an
+  already captured screenshot before confirmation.
+
+### Verified so far
+
+- Focused Quartz capture-mask test: 1 passed.
+
+### Remaining
+
+- Provide the actual live overlay frame from the app, and use the masked
+  capture in every visual prepare/re-capture/confirm path.
+
 ### Remaining Phase 2 work
 
 - The menu controls, global/local `Option-Space` press/release handling, and

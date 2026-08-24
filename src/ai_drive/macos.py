@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from io import BytesIO
+from typing import Callable
 
 from ApplicationServices import (
     AXIsProcessTrusted,
@@ -59,10 +60,13 @@ from ai_drive.actions import (
     DesktopState,
     LocatedAccessibleTarget,
 )
-from ai_drive.vision import ScreenPoint, Screenshot
+from ai_drive.vision import OverlayMask, ScreenPoint, Screenshot, mask_screenshot
 
 
 class QuartzScreenCapture:
+    def __init__(self, overlay_mask_provider: Callable[[], OverlayMask | None] | None = None):
+        self._overlay_mask_provider = overlay_mask_provider
+
     def has_permission(self) -> bool:
         return bool(CGPreflightScreenCaptureAccess())
 
@@ -81,11 +85,22 @@ class QuartzScreenCapture:
         data = bitmap.representationUsingType_properties_(NSBitmapImageFileTypeJPEG, {NSImageCompressionFactor: 0.82})
         frontmost = NSWorkspace.sharedWorkspace().frontmostApplication()
         bundle_id = str(frontmost.bundleIdentifier() or "") if frontmost else ""
-        return Screenshot(
+        screenshot = Screenshot(
             bytes(data), int(bitmap.pixelsWide()), int(bitmap.pixelsHigh()),
             float(bounds.size.width), float(bounds.size.height), display_id,
             time.time(), bundle_id, float(bounds.origin.x), float(bounds.origin.y),
         )
+        if self._overlay_mask_provider is None:
+            return screenshot
+        mask = self._overlay_mask_provider()
+        return mask_screenshot(screenshot, mask) if mask is not None else screenshot
+
+    def apply_overlay_mask(self, screenshot: Screenshot) -> Screenshot:
+        """Apply the current mask to an already captured screenshot."""
+        if self._overlay_mask_provider is None:
+            return screenshot
+        mask = self._overlay_mask_provider()
+        return mask_screenshot(screenshot, mask) if mask is not None else screenshot
 
 
 class QuartzDesktopObserver:
