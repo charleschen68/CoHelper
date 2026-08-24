@@ -180,6 +180,24 @@
 - Re-capture and revalidate through `ActionService` before any future click;
   add overlay masking, emergency-stop gating, and live macOS acceptance.
 
+## 2026-08-24 — Phase 5 guarded prepare-confirm bridge started
+
+### Implemented so far
+
+- Added a command bridge that maps only routed command IDs to explicit action
+  instructions and calls the existing guarded workflow's `prepare` method.
+- Confirmation remains a separate explicit call; one utterance can hold only
+  one pending action, and knowledge routes or missing instructions are rejected.
+
+### Verified so far
+
+- Focused action-bridge tests: 3 passed.
+
+### Remaining
+
+- Connect the bridge to the app's action service with user/session identity,
+  fresh screenshot revalidation, target masking, and emergency-stop state.
+
 ### Remaining Phase 2 work
 
 - The menu controls, global/local `Option-Space` press/release handling, and
