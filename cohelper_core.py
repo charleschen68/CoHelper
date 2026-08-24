@@ -39,6 +39,7 @@ DEFAULT_CONFIG = {
         "overlay": True,
         "voice_input": False,
         "voice_output": False,
+        "voice_direct_actions": False,
     },
     "privacy": {"allow_external_api": False},
     "clipboard": {"min_chars": 3, "max_chars": 20000, "poll_interval_ms": 400, "debounce_ms": 500, "process_plain_text_only": True},

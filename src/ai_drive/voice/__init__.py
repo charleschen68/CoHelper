@@ -12,6 +12,7 @@ from .audio import (
 from .input import VoiceInputCoordinator, VoiceInputError
 from .speech import AnswerSentenceBuffer, MacSpeechOutput, SpeechOutputError
 from .router import VoiceCommandRouter, VoiceCommandRouterError, VoiceRoute, VoiceRouteKind
+from .direct import VoiceDirectActionError, VoiceDirectIntent, VoiceDirectTarget, VoiceDirectTargetStore
 from .hotkey import PushToTalkController, PushToTalkEvent
 from .session import VoiceSession, VoiceSessionError, VoiceSessionState, VoiceTranscript
 
@@ -36,6 +37,10 @@ __all__ = [
     "VoiceCommandRouterError",
     "VoiceRoute",
     "VoiceRouteKind",
+    "VoiceDirectActionError",
+    "VoiceDirectIntent",
+    "VoiceDirectTarget",
+    "VoiceDirectTargetStore",
     "PushToTalkController",
     "PushToTalkEvent",
 ]

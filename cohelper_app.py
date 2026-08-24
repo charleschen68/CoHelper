@@ -783,6 +783,7 @@ class CohelperApp(NSObject):
             ("overlay", "启用左侧输出浮层与本机输出接口"),
             ("voice_input", "启用本地语音输入（需要 Whisper 与麦克风权限）"),
             ("voice_output", "启用本地答案朗读（macOS 系统语音）"),
+            ("voice_direct_actions", "启用受保护的语音直行动作（默认关闭）"),
         ):
             y = self._advanced_switch(document, y, key, title, self.config.enabled(key))
         y = self._advanced_switch(document, y, "allow_external_api", "允许外部 API（默认关闭）", bool(self.config.section("privacy")["allow_external_api"]))
@@ -948,8 +949,8 @@ class CohelperApp(NSObject):
             for key, control in self.advanced_controls.items():
                 if key == "allow_external_api":
                     candidate.section("privacy")["allow_external_api"] = control.state() == 1
-                elif key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output", "process_plain_text_only"}:
-                    target = "features" if key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output"} else "clipboard"
+                elif key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output", "voice_direct_actions", "process_plain_text_only"}:
+                    target = "features" if key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output", "voice_direct_actions"} else "clipboard"
                     candidate.section(target)[key] = control.state() == 1
                 elif key in {"qmd.no_rerank", "telegram.enabled"}:
                     section_name, field = key.split(".")
@@ -1001,6 +1002,7 @@ class CohelperApp(NSObject):
         previous_overlay_enabled = self.config.enabled("overlay")
         previous_voice_enabled = self.config.enabled("voice_input")
         previous_voice_output_enabled = self.config.enabled("voice_output")
+        previous_voice_direct_enabled = self.config.enabled("voice_direct_actions")
         self.config = candidate
         config_generation = self.coordinator.update_config(candidate)
         self.output_generation = max(self.output_generation, config_generation)
@@ -1016,6 +1018,8 @@ class CohelperApp(NSObject):
             self._start_speech_feature()
         elif previous_voice_output_enabled and not candidate.enabled("voice_output"):
             self._stop_speech_feature()
+        if candidate.enabled("voice_direct_actions") and not previous_voice_direct_enabled:
+            self._show_info("语音直行动作", "已启用配置开关；在完成权限、目标复核和紧急停止检查前不会执行动作。")
         if hasattr(self, "timer"):
             self.timer.invalidate()
             self._start_clipboard_timer()

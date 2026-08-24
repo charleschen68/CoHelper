@@ -157,6 +157,29 @@
 - Add end-to-end tests proving partial, finalized knowledge, unregistered
   command, and mixed-request paths remain separate.
 
+## 2026-08-24 — Phase 5 guarded direct-action boundary started
+
+### Implemented so far
+
+- Added a pure fresh-target store for the future “点它，执行” path. Only one
+  `voice_direct` target detected within three seconds can produce an intent.
+- Bound the intent to an utterance ID and made target consumption one-time;
+  replacement, expiry, invalid identity, and ambiguity are rejected.
+- Added `features.voice_direct_actions` with a safe default of `false`; a
+  disabled store does not retain or consume target context.
+- The store has no Quartz, Accessibility, shell, or other action capability.
+
+### Verified so far
+
+- Focused direct-action/config tests: 6 passed.
+- Full repository regression after the feature gate: 193 passed.
+
+### Remaining Phase 5 work
+
+- Ingest sanitized detection target context from the automation/output boundary.
+- Re-capture and revalidate through `ActionService` before any future click;
+  add overlay masking, emergency-stop gating, and live macOS acceptance.
+
 ### Remaining Phase 2 work
 
 - The menu controls, global/local `Option-Space` press/release handling, and
