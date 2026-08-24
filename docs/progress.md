@@ -203,6 +203,24 @@
 - Connect the bridge to the app's action service with real masked capture,
   fresh screenshot revalidation, and the durable application emergency state.
 
+## 2026-08-24 — Phase 5 screenshot masking seam started
+
+### Implemented so far
+
+- Added a platform-independent overlay masking adapter that maps the display's
+  bottom-left logical coordinates to screenshot pixels, clips at display
+  bounds, and preserves desktop/capture metadata for later `ActionService`
+  validation.
+
+### Verified so far
+
+- Focused screenshot masking tests: 2 passed.
+
+### Remaining
+
+- Supply the real overlay frame to `QuartzScreenCapture`, then wire masked
+  captures through prepare, re-capture, and confirm paths.
+
 ### Remaining Phase 2 work
 
 - The menu controls, global/local `Option-Space` press/release handling, and
