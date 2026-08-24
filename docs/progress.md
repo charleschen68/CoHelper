@@ -127,6 +127,36 @@
   interruption while a new recording starts. The streaming/cancellation path
   is covered by tests but has not yet had live GUI acceptance.
 
+## 2026-08-24 — Phase 4 deterministic voice routing started
+
+### Implemented so far
+
+- Added a pure finalized-transcript router with three explicit outcomes:
+  pending for partial speech, knowledge for ordinary questions, and command
+  for exact registered phrases.
+- Restricted registered command phrases to explicit endings in “执行”, rejected
+  duplicate aliases, and rejected unregistered or mixed command/knowledge
+  requests. The router has no action-execution capability.
+- Added `voice.command_aliases` as a validated local configuration boundary;
+  finalized commands are recognized and displayed, but still cannot invoke a
+  native action.
+
+### Verified so far
+
+- Focused router/config tests: 5 passed.
+- Full repository regression after route integration: 188 passed.
+- The unprivileged full-suite run reached 183 passed; four Unix-socket tests
+  were blocked by the sandbox's AF_UNIX bind restriction and require the local
+  socket test context below.
+
+### Remaining Phase 4 work
+
+- Connect recognized commands to the existing guarded action-preparation and
+  confirmation boundary. No native action should be invoked by the parser
+  itself.
+- Add end-to-end tests proving partial, finalized knowledge, unregistered
+  command, and mixed-request paths remain separate.
+
 ### Remaining Phase 2 work
 
 - The menu controls, global/local `Option-Space` press/release handling, and

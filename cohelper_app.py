@@ -67,6 +67,9 @@ from ai_drive.voice import (
     VoiceInputError,
     AnswerSentenceBuffer,
     MacSpeechOutput,
+    VoiceCommandRouter,
+    VoiceCommandRouterError,
+    VoiceRouteKind,
     WhisperCppWorker,
     WhisperCppWorkerConfig,
 )
@@ -109,6 +112,11 @@ class CohelperApp(NSObject):
         self.voice_vad = None
         self.voice_speech = None
         self.voice_sentence_buffer = None
+        try:
+            self.voice_router = VoiceCommandRouter(self.config.section("voice")["command_aliases"])
+        except VoiceCommandRouterError as exc:
+            self.startup_error = self.startup_error or f"语音命令配置无效：{exc}"
+            self.voice_router = VoiceCommandRouter({})
         self.status_item: NSStatusItem | None = None
         self.setup_installer = None
         self.setup_thread = None
@@ -411,10 +419,31 @@ class CohelperApp(NSObject):
     def _handle_voice_transcript(self, event):
         kind = OutputKind.TRANSCRIPT_FINAL if event.finalized else OutputKind.TRANSCRIPT_PARTIAL
         self._publish_output(kind, OutputSource.SYSTEM, "语音转写", event.text, generation=event.sequence)
-        if event.finalized:
-            generation = self.coordinator.submit(event.text)
-            if generation is not None:
-                self.output_generation = max(self.output_generation, generation)
+        if not event.finalized:
+            return
+        try:
+            route = self.voice_router.route(event.text, finalized=True)
+        except VoiceCommandRouterError as exc:
+            self._publish_output(
+                OutputKind.ERROR,
+                OutputSource.VOICE,
+                "语音请求已拒绝",
+                str(exc),
+                severity=OutputSeverity.WARNING,
+            )
+            return
+        if route.kind is VoiceRouteKind.COMMAND:
+            self._publish_output(
+                OutputKind.STATUS,
+                OutputSource.VOICE,
+                "语音命令已识别",
+                "动作能力尚未启用；未执行任何操作。",
+                severity=OutputSeverity.WARNING,
+            )
+            return
+        generation = self.coordinator.submit(route.text)
+        if generation is not None:
+            self.output_generation = max(self.output_generation, generation)
 
     def _handle_voice_error(self, error):
         self._publish_output(OutputKind.ERROR, OutputSource.SYSTEM, "语音输入错误", str(error), severity=OutputSeverity.ERROR)

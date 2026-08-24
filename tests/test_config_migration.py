@@ -63,6 +63,22 @@ def test_voice_input_is_disabled_by_default_and_validates_audio_boundary():
     assert enabled.enabled("voice_input") is True
 
 
+def test_voice_command_aliases_are_validated_and_remain_unexecuted_configuration():
+    config = Config(
+        {
+            "voice": {
+                "command_aliases": {
+                    "refresh_safari": ["刷新 Safari 执行"],
+                }
+            }
+        }
+    )
+    assert config.section("voice")["command_aliases"]["refresh_safari"] == ["刷新 Safari 执行"]
+
+    with pytest.raises(ConfigError, match="必须以执行结尾"):
+        Config({"voice": {"command_aliases": {"refresh": ["刷新 Safari"]}}})
+
+
 def test_voice_input_rejects_non_16khz_mono_configuration():
     with pytest.raises(ConfigError, match="16 kHz mono"):
         Config({"voice": {"sample_rate": 48_000}})

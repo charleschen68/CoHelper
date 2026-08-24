@@ -11,6 +11,7 @@ from .audio import (
 )
 from .input import VoiceInputCoordinator, VoiceInputError
 from .speech import AnswerSentenceBuffer, MacSpeechOutput, SpeechOutputError
+from .router import VoiceCommandRouter, VoiceCommandRouterError, VoiceRoute, VoiceRouteKind
 from .hotkey import PushToTalkController, PushToTalkEvent
 from .session import VoiceSession, VoiceSessionError, VoiceSessionState, VoiceTranscript
 
@@ -31,6 +32,10 @@ __all__ = [
     "AnswerSentenceBuffer",
     "MacSpeechOutput",
     "SpeechOutputError",
+    "VoiceCommandRouter",
+    "VoiceCommandRouterError",
+    "VoiceRoute",
+    "VoiceRouteKind",
     "PushToTalkController",
     "PushToTalkEvent",
 ]

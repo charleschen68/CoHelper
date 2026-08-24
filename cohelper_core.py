@@ -22,6 +22,7 @@ import requests
 import yaml
 
 from apps.clipboard_helper.service import route_clipboard_text
+from ai_drive.voice.router import VoiceCommandRouter, VoiceCommandRouterError
 from cohelper_setup import EnvironmentDoctor, KeychainStore, resolve_command
 
 
@@ -55,6 +56,7 @@ DEFAULT_CONFIG = {
         "model_path": str(APP_SUPPORT / "voice" / "models" / "ggml-large-v3-turbo-q5_0.bin"),
         "server_port": 18080,
         "language": "auto",
+        "command_aliases": {},
     },
     "actions": {
         "allowed_bundle_ids": ["com.apple.Safari", "com.apple.TextEdit"],
@@ -181,6 +183,22 @@ class Config:
             raise ConfigError("voice VAD 配置必须有效")
         if not 1024 <= server_port <= 65535:
             raise ConfigError("voice.server_port 必须在 1024 到 65535 之间")
+        command_aliases = voice.get("command_aliases")
+        if not isinstance(command_aliases, dict):
+            raise ConfigError("voice.command_aliases 必须是 mapping")
+        if any(not isinstance(command, str) or not command.strip() for command in command_aliases):
+            raise ConfigError("voice.command_aliases 的命令名不能为空")
+        if any(
+            not isinstance(phrases, list)
+            or not phrases
+            or not all(isinstance(phrase, str) and phrase.strip() for phrase in phrases)
+            for phrases in command_aliases.values()
+        ):
+            raise ConfigError("voice.command_aliases 的短语必须是非空字符串列表")
+        try:
+            VoiceCommandRouter(command_aliases)
+        except VoiceCommandRouterError as exc:
+            raise ConfigError(f"voice.command_aliases 无效：{exc}") from exc
         allowed = self.values["actions"].get("allowed_bundle_ids")
         if not isinstance(allowed, list) or not allowed or not all(isinstance(item, str) and item for item in allowed):
             raise ConfigError("actions.allowed_bundle_ids 必须是非空字符串列表")
