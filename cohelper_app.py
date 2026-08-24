@@ -70,6 +70,8 @@ from ai_drive.voice import (
     VoiceCommandRouter,
     VoiceCommandRouterError,
     VoiceRouteKind,
+    VoiceCommandActionBridge,
+    VoiceActionSafetyGate,
     WhisperCppWorker,
     WhisperCppWorkerConfig,
 )
@@ -113,6 +115,9 @@ class CohelperApp(NSObject):
         self.voice_speech = None
         self.voice_sentence_buffer = None
         self.direct_screen_capture = None
+        self.voice_action_bridge = None
+        self.voice_action_safety = None
+        self.pending_voice_action = None
         try:
             self.voice_router = VoiceCommandRouter(self.config.section("voice")["command_aliases"])
         except VoiceCommandRouterError as exc:
@@ -257,6 +262,7 @@ class CohelperApp(NSObject):
         menu.addItemWithTitle_action_keyEquivalent_("开始语音", "startVoice:", "")
         menu.addItemWithTitle_action_keyEquivalent_("结束并提交语音", "finishVoice:", "")
         menu.addItemWithTitle_action_keyEquivalent_("取消语音", "cancelVoice:", "")
+        menu.addItemWithTitle_action_keyEquivalent_("确认语音操作", "confirmVoiceAction:", "")
         menu.addItemWithTitle_action_keyEquivalent_("环境诊断与设置", "runDiagnostics:", "")
         menu.addItemWithTitle_action_keyEquivalent_("模型设置", "configureModels:", "")
         menu.addItemWithTitle_action_keyEquivalent_("高级配置", "configureAdvanced:", "")
@@ -361,14 +367,90 @@ class CohelperApp(NSObject):
             self._handle_voice_error(RuntimeError("voice direct actions require active voice input and overlay"))
             return
         try:
-            from ai_drive.macos import QuartzScreenCapture
+            from ai_drive.actions import AccessibilityCapability, ActionService
+            from ai_drive.macos import (
+                MacAccessibilityInspector,
+                QuartzDesktopObserver,
+                QuartzPointerController,
+                QuartzScreenCapture,
+            )
+            from ai_drive.vision import OllamaVisionClient, VisionAnalyzer
+            from ai_drive.workflow import VisualClickWorkflow
 
             self.direct_screen_capture = QuartzScreenCapture(self._current_overlay_mask)
+            actions = self.config.section("actions")
+            action_service = ActionService(
+                MacAccessibilityInspector(),
+                QuartzDesktopObserver(),
+                QuartzPointerController(),
+                allowed_bundle_ids=frozenset(actions["allowed_bundle_ids"]),
+                allowed_capabilities=frozenset(
+                    AccessibilityCapability(*str(value).split("|"))
+                    for value in actions["allowed_capabilities"]
+                ),
+                minimum_confidence=float(actions["minimum_confidence"]),
+                screenshot_max_age=float(actions["screenshot_max_age_seconds"]),
+                confirmation_ttl=float(actions["confirmation_ttl_seconds"]),
+            )
+            vision = self.config.section("vision")
+            workflow = VisualClickWorkflow(
+                self.direct_screen_capture,
+                VisionAnalyzer(OllamaVisionClient(str(vision["base_url"]), int(vision["timeout_seconds"])), str(vision["model"])),
+                action_service,
+            )
+            self.voice_action_safety = VoiceActionSafetyGate()
+            self.voice_action_bridge = VoiceCommandActionBridge(
+                workflow,
+                self.config.section("voice")["command_instructions"],
+                safety_gate=self.voice_action_safety,
+            )
         except Exception as exc:
+            self.direct_screen_capture = None
+            self.voice_action_bridge = None
+            self.voice_action_safety = None
             self._handle_voice_error(exc)
 
     def _stop_voice_direct_action_feature(self):
         self.direct_screen_capture = None
+        self.voice_action_bridge = None
+        self.voice_action_safety = None
+        self.pending_voice_action = None
+
+    def confirmVoiceAction_(self, sender):
+        if self.voice_action_bridge is not None and self.pending_voice_action is not None:
+            pending = self.pending_voice_action
+            try:
+                self.voice_action_bridge.confirm(
+                    pending,
+                    user_id=pending.user_id,
+                    chat_id=pending.chat_id,
+                )
+                self.pending_voice_action = None
+                self._publish_output(
+                    OutputKind.ACTION,
+                    OutputSource.ACTIONS,
+                    "语音操作",
+                    f"已确认并执行：{pending.command}",
+                    severity=OutputSeverity.INFO,
+                )
+                return
+            except Exception as exc:
+                self.pending_voice_action = None
+                self._publish_output(
+                    OutputKind.ERROR,
+                    OutputSource.ACTIONS,
+                    "语音操作被拒绝",
+                    str(exc),
+                    severity=OutputSeverity.ERROR,
+                )
+                return
+        self._publish_output(
+            OutputKind.ERROR,
+            OutputSource.VOICE,
+            "语音操作确认",
+            "当前没有可确认的语音操作。",
+            severity=OutputSeverity.WARNING,
+        )
 
     def startVoice_(self, sender):
         if self.voice_input is None or self.voice_capture is None:
@@ -457,13 +539,26 @@ class CohelperApp(NSObject):
             )
             return
         if route.kind is VoiceRouteKind.COMMAND:
-            self._publish_output(
-                OutputKind.STATUS,
-                OutputSource.VOICE,
-                "语音命令已识别",
-                "动作能力尚未启用；未执行任何操作。",
-                severity=OutputSeverity.WARNING,
-            )
+            if self.voice_action_bridge is None:
+                self._publish_output(OutputKind.STATUS, OutputSource.VOICE, "语音命令已识别", "动作能力尚未启用；未执行任何操作。", severity=OutputSeverity.WARNING)
+                return
+            try:
+                self.pending_voice_action = self.voice_action_bridge.prepare(
+                    route,
+                    utterance_id=f"{event.session_id}:{event.sequence}",
+                    user_id=0,
+                    chat_id=0,
+                    overlay_masked=self._current_overlay_mask() is not None,
+                )
+                self._publish_output(
+                    OutputKind.ACTION,
+                    OutputSource.ACTIONS,
+                    "待确认语音操作",
+                    f"已准备：{self.pending_voice_action.command}；请从菜单确认。",
+                    severity=OutputSeverity.WARNING,
+                )
+            except Exception as exc:
+                self._publish_output(OutputKind.ERROR, OutputSource.ACTIONS, "语音操作准备失败", str(exc), severity=OutputSeverity.ERROR)
             return
         generation = self.coordinator.submit(route.text)
         if generation is not None:

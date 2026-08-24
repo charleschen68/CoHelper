@@ -274,6 +274,29 @@
 - Inject this capture into the guarded visual workflow and ensure prepare,
   inference re-capture, and confirm all use masked screenshots.
 
+## 2026-08-24 — Phase 5 app-owned guarded workflow started
+
+### Implemented so far
+
+- When direct actions are enabled, CoHelperApp now constructs the local vision
+  analyzer, masked `QuartzScreenCapture`, `ActionService`, and
+  `VisualClickWorkflow` behind the feature gate.
+- `voice.command_instructions` maps registered command IDs to explicit action
+  instructions. Final command handling only prepares a pending action; no
+  automatic confirmation or click is wired.
+- A prepared action is retained for an explicit menu confirmation; the confirm
+  path calls the existing guarded workflow and reports success/failure.
+
+### Verified so far
+
+- Focused workflow configuration tests: 3 passed.
+
+### Remaining
+
+- Validate the live screen again through `ActionService.confirm` in a real
+  enabled-app acceptance run, including changed-target and emergency-stop
+  rejection.
+
 ### Remaining Phase 2 work
 
 - The menu controls, global/local `Option-Space` press/release handling, and

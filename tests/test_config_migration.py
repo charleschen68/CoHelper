@@ -87,6 +87,13 @@ def test_voice_direct_actions_require_voice_input_and_overlay():
         Config({"features": {"voice_direct_actions": True, "voice_input": True, "overlay": False}})
 
 
+def test_voice_command_instructions_are_local_string_mapping():
+    config = Config({"voice": {"command_instructions": {"refresh_safari": "刷新 Safari"}}})
+    assert config.section("voice")["command_instructions"]["refresh_safari"] == "刷新 Safari"
+    with pytest.raises(ConfigError, match="command_instructions"):
+        Config({"voice": {"command_instructions": {"refresh_safari": 1}}})
+
+
 def test_voice_input_rejects_non_16khz_mono_configuration():
     with pytest.raises(ConfigError, match="16 kHz mono"):
         Config({"voice": {"sample_rate": 48_000}})

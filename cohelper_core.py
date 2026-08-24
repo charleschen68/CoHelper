@@ -58,6 +58,7 @@ DEFAULT_CONFIG = {
         "server_port": 18080,
         "language": "auto",
         "command_aliases": {},
+        "command_instructions": {},
     },
     "actions": {
         "allowed_bundle_ids": ["com.apple.Safari", "com.apple.TextEdit"],
@@ -204,6 +205,13 @@ class Config:
             VoiceCommandRouter(command_aliases)
         except VoiceCommandRouterError as exc:
             raise ConfigError(f"voice.command_aliases 无效：{exc}") from exc
+        command_instructions = voice.get("command_instructions")
+        if not isinstance(command_instructions, dict) or any(
+            not isinstance(command, str) or not command.strip()
+            or not isinstance(instruction, str) or not instruction.strip()
+            for command, instruction in command_instructions.items()
+        ):
+            raise ConfigError("voice.command_instructions 必须是非空字符串 mapping")
         allowed = self.values["actions"].get("allowed_bundle_ids")
         if not isinstance(allowed, list) or not allowed or not all(isinstance(item, str) and item for item in allowed):
             raise ConfigError("actions.allowed_bundle_ids 必须是非空字符串列表")
