@@ -31,7 +31,12 @@ CONFIG_PATH = APP_SUPPORT / "config.yaml"
 
 
 DEFAULT_CONFIG = {
-    "features": {"translation": True, "knowledge_search": True, "knowledge_answer": True},
+    "features": {
+        "translation": True,
+        "knowledge_search": True,
+        "knowledge_answer": True,
+        "overlay": True,
+    },
     "privacy": {"allow_external_api": False},
     "clipboard": {"min_chars": 3, "max_chars": 20000, "poll_interval_ms": 400, "debounce_ms": 500, "process_plain_text_only": True},
     "knowledge": {"collection": "jarvis-wiki", "source_path": "", "limit": 5, "query_timeout_seconds": 20, "max_summary_source_chars": 50000},
@@ -120,6 +125,9 @@ class Config:
             raise ConfigError("knowledge.limit 必须大于 0")
         if max_source_chars < 1000:
             raise ConfigError("knowledge.max_summary_source_chars 不能小于 1000")
+        for feature, enabled in self.values["features"].items():
+            if not isinstance(enabled, bool):
+                raise ConfigError(f"features.{feature} 必须是 boolean")
         if self.values["features"].get("knowledge_answer") and not self.values["features"].get("knowledge_search"):
             raise ConfigError("knowledge_answer 依赖 knowledge_search")
         for section_name in ("translation", "summary"):
@@ -465,13 +473,13 @@ def build_knowledge_prompt(
 
 @dataclass
 class TaskCallbacks:
-    on_started: Callable[[str], None] = lambda _: None
-    on_translation: Callable[[ModelResult], None] = lambda _: None
-    on_knowledge: Callable[[list[KnowledgeHit]], None] = lambda _: None
-    on_summary: Callable[[ModelResult], None] = lambda _: None
-    on_error: Callable[[str], None] = lambda _: None
-    on_rejected: Callable[[str], None] = lambda _: None
-    on_finished: Callable[[], None] = lambda: None
+    on_started: Callable[[int, str], None] = lambda _generation, _text: None
+    on_translation: Callable[[int, ModelResult], None] = lambda _generation, _result: None
+    on_knowledge: Callable[[int, list[KnowledgeHit]], None] = lambda _generation, _hits: None
+    on_summary: Callable[[int, ModelResult], None] = lambda _generation, _result: None
+    on_error: Callable[[int, str], None] = lambda _generation, _error: None
+    on_rejected: Callable[[int, str], None] = lambda _generation, _reason: None
+    on_finished: Callable[[int], None] = lambda _generation: None
 
 
 class TaskCoordinator:
@@ -482,11 +490,13 @@ class TaskCoordinator:
         self._generation = 0
         self._cancel = threading.Event()
 
-    def submit(self, text: str) -> None:
+    def submit(self, text: str) -> int | None:
         with self._lock:
             config = Config(deepcopy(self.config.values))
             if not (config.enabled("translation") or config.enabled("knowledge_search")):
-                return
+                return None
+            if not text or len(text) < int(config.section("clipboard")["min_chars"]):
+                return None
             self._generation += 1
             generation = self._generation
             self._cancel.set()
@@ -494,19 +504,19 @@ class TaskCoordinator:
             cancel = self._cancel
         rejection = self._rejection_reason(text, config)
         if rejection:
-            self.callbacks.on_rejected(rejection)
-            return
-        if not text or len(text) < int(config.section("clipboard")["min_chars"]):
-            return
-        self.callbacks.on_started(text)
+            self.callbacks.on_rejected(generation, rejection)
+            return generation
+        self.callbacks.on_started(generation, text)
         threading.Thread(target=self._run, args=(generation, text, cancel, config), daemon=True).start()
+        return generation
 
-    def update_config(self, config: Config) -> None:
+    def update_config(self, config: Config) -> int:
         """Cancel in-flight work before atomically adopting a new configuration."""
         with self._lock:
             self._generation += 1
             self._cancel.set()
             self.config = config
+            return self._generation
 
     def cancel(self) -> None:
         with self._lock:
@@ -542,7 +552,7 @@ class TaskCoordinator:
         for job in jobs:
             job.join()
         if self._current(generation, cancel):
-            self.callbacks.on_finished()
+            self.callbacks.on_finished(generation)
 
     def _translation(
         self, generation: int, text: str, cancel: threading.Event, config: Config | None = None
@@ -550,11 +560,13 @@ class TaskCoordinator:
         config = config or self.config
         if self._external_blocked(text, "translation", config):
             if self._current(generation, cancel):
-                self.callbacks.on_translation(ModelResult(error="外部 API 被隐私策略阻止", provider="blocked"))
+                self.callbacks.on_translation(
+                    generation, ModelResult(error="外部 API 被隐私策略阻止", provider="blocked")
+                )
             return
         result = ModelService(config, "translation").run(text, TRANSLATION_SYSTEM, cancel)
         if self._current(generation, cancel):
-            self.callbacks.on_translation(result)
+            self.callbacks.on_translation(generation, result)
 
     def _knowledge(
         self, generation: int, text: str, cancel: threading.Event, config: Config | None = None
@@ -565,11 +577,13 @@ class TaskCoordinator:
             qmd = QmdClient(config)
             hits = qmd.search(route.query, cancel)
             if self._current(generation, cancel):
-                self.callbacks.on_knowledge(hits)
+                self.callbacks.on_knowledge(generation, hits)
             if not config.enabled("knowledge_answer") or not self._current(generation, cancel):
                 return
             if not hits:
-                self.callbacks.on_summary(ModelResult(text="知识库中没有足够依据。", provider="knowledge"))
+                self.callbacks.on_summary(
+                    generation, ModelResult(text="知识库中没有足够依据。", provider="knowledge")
+                )
                 return
             documents = [(hit, qmd.get(hit, cancel)) for hit in hits]
             if self._external_blocked(text, "summary", config):
@@ -586,10 +600,10 @@ class TaskCoordinator:
                 else:
                     result = ModelService(config, "summary").run(prompt, SUMMARY_SYSTEM, cancel)
             if self._current(generation, cancel):
-                self.callbacks.on_summary(result)
+                self.callbacks.on_summary(generation, result)
         except Exception as exc:
             if self._current(generation, cancel):
-                self.callbacks.on_error(f"知识库处理失败：{type(exc).__name__}: {exc}")
+                self.callbacks.on_error(generation, f"知识库处理失败：{type(exc).__name__}: {exc}")
 
     def _external_blocked(self, text: str, kind: str, config: Config | None = None) -> bool:
         config = config or self.config

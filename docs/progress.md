@@ -1,5 +1,74 @@
 # Progress Log
 
+## 2026-08-22 — Voice and overlay phase 1
+
+### Approved design
+
+- The agreed cross-session design is
+  `docs/specs/voice-overlay-actions.md`: explicit push-to-talk, local
+  whisper.cpp, grounded streaming answers, interruptible system TTS,
+  deterministic commands, guarded direct native actions, fresh “点它” target
+  context, overlay masking, durable emergency stop, and five delivery phases.
+- Normal startup may make explicitly configured direct voice actions available,
+  but a durable emergency-stop latch overrides startup and requires manual
+  recovery.
+
+### Implemented in phase 1
+
+- Added strict schema-version-1 `OutputEvent` serialization with bounded IDs,
+  renderable Unicode text, JSON metadata, typed enum values, exact integer
+  versions, total wire size, and rejection of unknown fields or invalid data.
+  Answer generations and emergency-latch revisions are mandatory where order
+  matters.
+- Added a platform-independent overlay model with partial-transcript
+  replacement, per-source answer-generation high-water marks, late-event
+  rejection, event deduplication, a bounded timeline, 12-second idle hiding,
+  20-second action-error retention, and revision-ordered emergency state that
+  cannot disappear when timeline entries are evicted.
+- Added a current-user output-only Unix socket protocol, real client/server
+  transport, bounded concurrent clients, total read deadlines, active-socket
+  protection, matching event-ID acknowledgements, and `0700` directory /
+  `0600` socket permissions. The transport cannot submit action commands.
+- Added an AppKit left-side `NSPanel` with a `NSVisualEffectView` background,
+  no activation, mouse passthrough, all-Spaces visibility, main-display layout,
+  display-change repositioning, bounded rendering, UTF-16-safe styling, old-entry
+  fading, and explicit emergency/error colors.
+- Added `features.overlay`, including validated boolean configuration, an
+  advanced-config switch, and immediate runtime start/stop of the panel, timer,
+  display observer, and socket.
+- Wired existing clipboard input, translation, knowledge sources, answers, and
+  task errors into the overlay with generation-aware UI callbacks so cancelled
+  or reconfigured work cannot render late. The automation process does not
+  publish output events yet; that remains phase 5.
+- Updated setuptools and PyInstaller package discovery for `ai_drive.output`
+  and `apps.overlay`.
+
+### Verified
+
+- Full test suite in the required local Unix-socket context: 161 passed.
+- `python3 -m compileall -q src apps cohelper_core.py cohelper_app.py
+  cohelper_setup.py` and `git diff --check` passed.
+- Real Unix-socket delivery, concurrent slow-client isolation, total client and
+  server deadlines, prompt shutdown, and `0700` / `0600` permissions passed.
+- Live AppKit component acceptance confirmed a readable left-side blurred
+  panel, fading old entries, orange action errors, Terminal remaining
+  frontmost, mouse passthrough, and the non-activating panel style.
+- An isolated PyInstaller build under `/private/tmp` completed from the final
+  source. Deep strict code-signature verification passed, and its archive
+  contains `ai_drive.output`, `apps.overlay`, and `cohelper_app`.
+- Standards and specification reviews both completed with no remaining P1/P2
+  finding. The review drove fixes for callback generations, socket concurrency
+  and deadlines, answer-stream high-water marks, Unicode/AppKit range safety,
+  emergency ordering, and strict acknowledgements.
+
+### Phase boundary
+
+- Phase 1 is locally verified. This is not a release claim: the isolated app was
+  not notarized or accepted on a clean Mac.
+- Phase 2 has not started. No microphone, Whisper worker, VAD, TTS, voice
+  command router, direct voice click, overlay masking, or automation output
+  publication is implemented.
+
 ## 2026-08-21
 
 ### Completed

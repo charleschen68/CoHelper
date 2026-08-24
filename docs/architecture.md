@@ -10,6 +10,8 @@ Telegram -> apps/telegram_bridge -> VisualClickWorkflow
 
 Clipboard -> apps/clipboard_helper -> translation
                                     -> QMD -> qwen3:8b grounded answer
+
+Local publishers -> OutputEvent Unix socket -> apps/overlay -> AppKit overlay
 ```
 
 `apps/` contains human-facing processes. `src/ai_drive/` contains reusable
@@ -61,7 +63,14 @@ explicit insufficient-knowledge response without invoking the answer model.
 
 ## Extension points
 
-Future audio input/output, display output, text command inputs, and external
-Agent interfaces should depend on the public protocols in `ai_drive`, use the
-same explicit capability and confirmation model, and remain disabled when their
-feature flag is false.
+Display output now depends on the versioned, bounded `ai_drive.output` event
+contract. The menu-bar app accepts output-only events through a current-user
+Unix socket and renders them in a non-activating left-side overlay. The output
+socket is not an action interface. The screen-automation process does not emit
+these events yet. `features.overlay: false` prevents the panel, its timer, its
+display observer, and the output socket from starting.
+
+Audio input/output, voice commands, and external Agent interfaces remain phased
+work described in [the approved voice specification](specs/voice-overlay-actions.md).
+They must use the same explicit capability model and remain uninitialized when
+their feature flag is false.
