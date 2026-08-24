@@ -6,11 +6,14 @@ import json
 import logging
 import re
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Protocol
 from urllib.parse import urlparse
+
+import requests
 
 from ai_drive.vision import Screenshot
 
@@ -54,6 +57,22 @@ class RegionTranslationCancelledError(RegionTranslationError):
     pass
 
 
+class VisionModelTimeoutError(TextExtractionError):
+    pass
+
+
+class VisionModelUnavailableError(TextExtractionError):
+    pass
+
+
+class TranslationModelTimeoutError(RegionTranslationError):
+    pass
+
+
+class TranslationModelUnavailableError(RegionTranslationError):
+    pass
+
+
 class TextVisionClient(Protocol):
     endpoint: str
 
@@ -65,7 +84,7 @@ class TextVisionClient(Protocol):
         cancel: threading.Event | None = None,
     ) -> str: ...
 
-    def cancel(self) -> None: ...
+    def cancel(self) -> bool: ...
 
 
 class TranslationClient(Protocol):
@@ -79,7 +98,7 @@ class TranslationClient(Protocol):
         cancel: threading.Event | None = None,
     ) -> str: ...
 
-    def cancel(self) -> None: ...
+    def cancel(self) -> bool: ...
 
 
 def _require_loopback_client(client, purpose: str) -> None:
@@ -118,6 +137,7 @@ class RegionTranslationState(str, Enum):
     IDLE = "idle"
     WAITING_OCR = "waiting_ocr"
     OCR_READY = "ocr_ready"
+    STOPPING = "stopping"
     WAITING_TRANSLATION = "waiting_translation"
     READY = "ready"
     FAILED = "failed"
@@ -128,8 +148,10 @@ class RegionTranslationFailure(str, Enum):
     NO_TEXT = "no_text"
     TEXT_TOO_LONG = "text_too_long"
     INVALID_TEXT_RESPONSE = "invalid_text_response"
+    VISION_TIMEOUT = "vision_timeout"
     VISION_UNAVAILABLE = "vision_unavailable"
     INVALID_TRANSLATION_RESPONSE = "invalid_translation_response"
+    TRANSLATION_TIMEOUT = "translation_timeout"
     TRANSLATION_UNAVAILABLE = "translation_unavailable"
     INTERNAL = "internal"
 
@@ -169,6 +191,12 @@ class RegionTranslationSnapshot:
             ):
                 raise ValueError("waiting_ocr snapshot contains premature results")
             return
+        if self.state is RegionTranslationState.STOPPING:
+            if self.translation is not None or self.failure is not None:
+                raise ValueError("stopping snapshot contains a result")
+            if (self.source is None) is not (self.target is None):
+                raise ValueError("stopping snapshot has an incomplete translation input")
+            return
         if self.state is RegionTranslationState.FAILED:
             if self.failure is None or self.translation is not None:
                 raise ValueError("failed snapshot requires only a classified failure")
@@ -196,12 +224,19 @@ class ScreenshotTextExtractor:
         self, screenshot: Screenshot, cancel: threading.Event | None = None
     ) -> ExtractedText:
         self._raise_if_cancelled(cancel)
-        raw = self._client.analyze(
-            self._model,
-            screenshot.image,
-            self._prompt(),
-            cancel,
-        )
+        try:
+            raw = self._client.analyze(
+                self._model,
+                screenshot.image,
+                self._prompt(),
+                cancel,
+            )
+        except (TimeoutError, requests.Timeout) as exc:
+            self._raise_if_cancelled(cancel)
+            raise VisionModelTimeoutError("vision model timed out") from exc
+        except Exception as exc:
+            self._raise_if_cancelled(cancel)
+            raise VisionModelUnavailableError("vision model is unavailable") from exc
         self._raise_if_cancelled(cancel)
         try:
             payload = json.loads(raw)
@@ -233,8 +268,8 @@ class ScreenshotTextExtractor:
         if cancel is not None and cancel.is_set():
             raise TextExtractionCancelledError("text extraction was cancelled")
 
-    def cancel(self) -> None:
-        self._client.cancel()
+    def cancel(self) -> bool:
+        return self._client.cancel() is True
 
     @staticmethod
     def _prompt() -> str:
@@ -278,18 +313,28 @@ class RegionTranslationService:
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        result = self._client.complete(
-            self._model,
-            TRANSLATION_SYSTEM,
-            user,
-            cancel,
-        )
+        try:
+            result = self._client.complete(
+                self._model,
+                TRANSLATION_SYSTEM,
+                user,
+                cancel,
+            )
+        except (TimeoutError, requests.Timeout) as exc:
+            self._raise_if_cancelled(cancel)
+            raise TranslationModelTimeoutError("translation model timed out") from exc
+        except Exception as exc:
+            self._raise_if_cancelled(cancel)
+            raise TranslationModelUnavailableError(
+                "translation model is unavailable"
+            ) from exc
         self._raise_if_cancelled(cancel)
         if not isinstance(result, str) or not result.strip():
             raise InvalidTranslationResponseError("translation returned empty output")
         translated = result.strip()
-        missing = sorted(token for token in self._protected_tokens(source.text) if token not in translated)
-        if missing:
+        source_tokens = Counter(self._protected_tokens(source.text))
+        translated_tokens = Counter(self._protected_tokens(translated))
+        if any(translated_tokens[token] < count for token, count in source_tokens.items()):
             raise InvalidTranslationResponseError(
                 "translation changed or removed a protected token"
             )
@@ -301,21 +346,25 @@ class RegionTranslationService:
             raise RegionTranslationCancelledError("translation was cancelled")
 
     @staticmethod
-    def _protected_tokens(text: str) -> set[str]:
+    def _protected_tokens(text: str) -> list[str]:
         punctuation = ".,;:!?，。；：！？"
-        tokens = {
+        tokens = [
             match.rstrip(punctuation)
             for match in re.findall(r"https?://[^\s,，。;；]+", text)
-        }
-        tokens.update(
+        ]
+        tokens.extend(
             match.rstrip(punctuation)
             for match in re.findall(r"(?<!\w)/[A-Za-z0-9._~/-]+", text)
         )
-        tokens.update(re.findall(r"(?<!\w)\d+(?:\.\d+)*(?!\w)", text))
+        tokens.extend(re.findall(r"[A-Za-z]:\\[^\s]+", text))
+        tokens.extend(re.findall(r"(?<![\w.])-{1,2}[A-Za-z][\w-]*", text))
+        tokens.extend(re.findall(r"`[^`]+`", text))
+        tokens.extend(re.findall(r"\bv\d+(?:\.\d+)+\b", text, flags=re.IGNORECASE))
+        tokens.extend(re.findall(r"(?<![\w.])\d+(?:\.\d+)*(?![\w.])", text))
         return tokens
 
-    def cancel(self) -> None:
-        self._client.cancel()
+    def cancel(self) -> bool:
+        return self._client.cancel() is True
 
 
 class RegionTranslationCoordinator:
@@ -330,10 +379,11 @@ class RegionTranslationCoordinator:
         self._extractor = extractor
         self._translator = translator
         self._on_change = on_change or (lambda _snapshot: None)
-        # State commit and callback delivery share one re-entrant serialization
-        # boundary. This guarantees callback order while allowing a callback to
-        # request a new target without deadlocking itself.
+        # State mutation and external callback delivery use separate locks.
+        # Callbacks are ordered without running arbitrary UI code under the
+        # state lock.
         self._lock = threading.RLock()
+        self._delivery_lock = threading.RLock()
         self._generation = 0
         self._cancel = threading.Event()
         self._snapshot = RegionTranslationSnapshot(0, RegionTranslationState.IDLE)
@@ -342,6 +392,10 @@ class RegionTranslationCoordinator:
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="region-translation"
         )
+        self._callback_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="region-translation-callback"
+        )
+        self._active_future = None
         self._closed = False
 
     @property
@@ -352,18 +406,30 @@ class RegionTranslationCoordinator:
     def start(self, screenshot: Screenshot) -> int:
         with self._lock:
             self._require_open()
-            self._cancel_active_locked()
+            previous_active = self._active_future is not None and not self._active_future.done()
+            stopped = self._cancel_active_locked()
             self._generation += 1
             generation = self._generation
             cancel = threading.Event()
             self._cancel = cancel
+            state = (
+                RegionTranslationState.STOPPING
+                if previous_active and not stopped
+                else RegionTranslationState.WAITING_OCR
+            )
             snapshot = RegionTranslationSnapshot(
                 generation,
-                RegionTranslationState.WAITING_OCR,
+                state,
                 screenshot=screenshot,
             )
             self._snapshot = snapshot
-            self._executor.submit(self._run_full, generation, screenshot, cancel)
+            self._active_future = self._executor.submit(
+                self._run_queued_full,
+                generation,
+                screenshot,
+                cancel,
+                state is RegionTranslationState.STOPPING,
+            )
             self._notify_locked(snapshot)
         return generation
 
@@ -379,26 +445,33 @@ class RegionTranslationCoordinator:
             current = self._snapshot
             if current.screenshot is None or current.source is None:
                 return None
-            self._cancel_active_locked()
+            previous_active = self._active_future is not None and not self._active_future.done()
+            stopped = self._cancel_active_locked()
             self._generation += 1
             generation = self._generation
             cancel = threading.Event()
             self._cancel = cancel
+            state = (
+                RegionTranslationState.STOPPING
+                if previous_active and not stopped
+                else RegionTranslationState.WAITING_TRANSLATION
+            )
             snapshot = RegionTranslationSnapshot(
                 generation,
-                RegionTranslationState.WAITING_TRANSLATION,
+                state,
                 screenshot=current.screenshot,
                 source=current.source,
                 target=target,
             )
             self._snapshot = snapshot
-            self._executor.submit(
-                self._run_translation,
+            self._active_future = self._executor.submit(
+                self._run_queued_translation,
                 generation,
                 current.screenshot,
                 current.source,
                 target,
                 cancel,
+                state is RegionTranslationState.STOPPING,
             )
             self._notify_locked(snapshot)
         return generation
@@ -416,16 +489,60 @@ class RegionTranslationCoordinator:
         return snapshot.generation
 
     def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            self._cancel_active_locked()
-            self._generation += 1
-            self._snapshot = RegionTranslationSnapshot(
-                self._generation, RegionTranslationState.CANCELLED
-            )
+        with self._delivery_lock:
+            with self._lock:
+                if self._closed:
+                    return
+                self._closed = True
+                self._cancel_active_locked()
+                self._generation += 1
+                self._snapshot = RegionTranslationSnapshot(
+                    self._generation, RegionTranslationState.CANCELLED
+                )
         self._executor.shutdown(wait=False, cancel_futures=True)
+        self._callback_executor.shutdown(wait=False, cancel_futures=True)
+
+    def _run_queued_full(
+        self,
+        generation: int,
+        screenshot: Screenshot,
+        cancel: threading.Event,
+        was_stopping: bool,
+    ) -> None:
+        if was_stopping and not self._publish(
+            generation,
+            RegionTranslationSnapshot(
+                generation,
+                RegionTranslationState.WAITING_OCR,
+                screenshot=screenshot,
+            ),
+            cancel,
+        ):
+            return
+        self._run_full(generation, screenshot, cancel)
+
+    def _run_queued_translation(
+        self,
+        generation: int,
+        screenshot: Screenshot,
+        source: ExtractedText,
+        target: TranslationTarget,
+        cancel: threading.Event,
+        was_stopping: bool,
+    ) -> None:
+        if was_stopping and not self._publish(
+            generation,
+            RegionTranslationSnapshot(
+                generation,
+                RegionTranslationState.WAITING_TRANSLATION,
+                screenshot=screenshot,
+                source=source,
+                target=target,
+            ),
+            cancel,
+        ):
+            return
+        self._run_translation(generation, screenshot, source, target, cancel)
 
     def _run_full(
         self,
@@ -455,6 +572,14 @@ class RegionTranslationCoordinator:
                 generation,
                 screenshot,
                 RegionTranslationFailure.INVALID_TEXT_RESPONSE,
+                cancel,
+            )
+            return
+        except VisionModelTimeoutError:
+            self._fail(
+                generation,
+                screenshot,
+                RegionTranslationFailure.VISION_TIMEOUT,
                 cancel,
             )
             return
@@ -522,6 +647,16 @@ class RegionTranslationCoordinator:
                 generation,
                 screenshot,
                 RegionTranslationFailure.INVALID_TRANSLATION_RESPONSE,
+                cancel,
+                source=source,
+                target=target,
+            )
+            return
+        except TranslationModelTimeoutError:
+            self._fail(
+                generation,
+                screenshot,
+                RegionTranslationFailure.TRANSLATION_TIMEOUT,
                 cancel,
                 source=source,
                 target=target,
@@ -613,19 +748,31 @@ class RegionTranslationCoordinator:
         if self._closed:
             raise RuntimeError("region translation coordinator is closed")
 
-    def _cancel_active_locked(self) -> None:
+    def _cancel_active_locked(self) -> bool:
         self._cancel.set()
+        if self._active_future is None or self._active_future.done():
+            return True
+        stopped = True
         for service in (self._extractor, self._translator):
             try:
-                service.cancel()
+                stopped = service.cancel() is True and stopped
             except Exception as exc:
+                stopped = False
                 self._report_unexpected("transport cancellation", exc)
+        return stopped
 
     def _notify_locked(self, snapshot: RegionTranslationSnapshot) -> None:
-        try:
-            self._on_change(snapshot)
-        except Exception as exc:
-            self._report_unexpected("state callback", exc)
+        self._callback_executor.submit(self._deliver, snapshot)
+
+    def _deliver(self, snapshot: RegionTranslationSnapshot) -> None:
+        with self._delivery_lock:
+            with self._lock:
+                if self._closed or snapshot.generation != self._generation:
+                    return
+            try:
+                self._on_change(snapshot)
+            except Exception as exc:
+                self._report_unexpected("state callback", exc)
 
     @staticmethod
     def _report_unexpected(operation: str, exc: Exception) -> None:

@@ -14,7 +14,11 @@ from ai_drive.region_translation import (
     RegionTranslationService,
     ScreenshotTextExtractor,
     TextExtractionError,
+    TranslationModelTimeoutError,
+    TranslationModelUnavailableError,
     TranslationTarget,
+    VisionModelTimeoutError,
+    VisionModelUnavailableError,
     default_target_for,
 )
 from ai_drive.vision import Screenshot
@@ -47,6 +51,7 @@ class RecordingTextVisionClient:
 
     def cancel(self):
         self.cancel_calls += 1
+        return True
 
 
 def test_text_extractor_returns_strict_recognized_text_in_reading_order():
@@ -104,6 +109,27 @@ def test_text_extractor_rejects_model_override():
         ScreenshotTextExtractor(RecordingTextVisionClient("{}"), model="other")
 
 
+class RaisingTextVisionClient(RecordingTextVisionClient):
+    def __init__(self, error):
+        super().__init__("unused")
+        self.error = error
+
+    def analyze(self, model, image, prompt, cancel=None):
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error, expected",
+    [
+        (TimeoutError(), VisionModelTimeoutError),
+        (RuntimeError("connection failed"), VisionModelUnavailableError),
+    ],
+)
+def test_text_extractor_normalizes_transport_failures(error, expected):
+    with pytest.raises(expected):
+        ScreenshotTextExtractor(RaisingTextVisionClient(error)).extract(screenshot())
+
+
 class RecordingTranslationClient:
     def __init__(self, response="你好，世界"):
         self.response = response
@@ -117,6 +143,7 @@ class RecordingTranslationClient:
 
     def cancel(self):
         self.cancel_calls += 1
+        return True
 
 
 def test_region_translation_sends_untrusted_text_as_json_data():
@@ -172,6 +199,29 @@ def test_region_translation_rejects_model_override():
         RegionTranslationService(RecordingTranslationClient(), model="other")
 
 
+class RaisingTranslationClient(RecordingTranslationClient):
+    def __init__(self, error):
+        super().__init__("unused")
+        self.error = error
+
+    def complete(self, model, system, user, cancel=None):
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error, expected",
+    [
+        (TimeoutError(), TranslationModelTimeoutError),
+        (RuntimeError("connection failed"), TranslationModelUnavailableError),
+    ],
+)
+def test_translation_normalizes_transport_failures(error, expected):
+    with pytest.raises(expected):
+        RegionTranslationService(RaisingTranslationClient(error)).translate(
+            ExtractedText("hello", "en"), TranslationTarget.CHINESE
+        )
+
+
 def test_region_translation_rejects_non_loopback_clients():
     client = RecordingTranslationClient()
     client.endpoint = "https://translate.example.com"
@@ -190,6 +240,23 @@ def test_text_extractor_rejects_non_loopback_clients():
 
 def test_region_translation_rejects_mutated_machine_verifiable_tokens():
     client = RecordingTranslationClient("版本 1.2.4，访问 https://wrong.example")
+
+    with pytest.raises(RegionTranslationError, match="protected token"):
+        RegionTranslationService(client).translate(
+            ExtractedText("Version 1.2.3 at https://example.com", "en"),
+            TranslationTarget.CHINESE,
+        )
+
+
+@pytest.mark.parametrize(
+    "translated",
+    [
+        "版本 11.2.30，访问 https://example.com",
+        "版本 1.2.3，访问 https://example.com.evil",
+    ],
+)
+def test_protected_tokens_require_exact_boundaries(translated):
+    client = RecordingTranslationClient(translated)
 
     with pytest.raises(RegionTranslationError, match="protected token"):
         RegionTranslationService(client).translate(
@@ -220,6 +287,7 @@ class ImmediateExtractor:
 
     def cancel(self):
         self.cancel_calls += 1
+        return True
 
 
 class ImmediateTranslator:
@@ -233,6 +301,7 @@ class ImmediateTranslator:
 
     def cancel(self):
         self.cancel_calls += 1
+        return True
 
 
 def test_coordinator_runs_one_capture_through_ocr_and_translation():
@@ -279,6 +348,7 @@ class SwitchingTranslator:
 
     def cancel(self):
         self.cancel_calls += 1
+        return True
 
 
 def test_target_switch_reuses_ocr_and_discards_cancelled_translation():
@@ -331,6 +401,7 @@ class SequencedBlockingExtractor:
 
     def cancel(self):
         self.cancel_calls += 1
+        return True
 
 
 def test_new_session_never_publishes_stale_model_results():
@@ -433,6 +504,9 @@ def test_cancel_callback_is_never_followed_by_an_older_generation_callback():
         extractor.release_first.set()
         assert extractor.first_finished.wait(1)
 
+        wait_for(
+            lambda: (new_generation, RegionTranslationState.CANCELLED) in states
+        )
         cancel_index = states.index((new_generation, RegionTranslationState.CANCELLED))
         assert all(
             generation != old_generation
@@ -469,6 +543,16 @@ def test_callback_delivery_and_generation_changes_are_serialized():
         assert not cancel_thread.is_alive()
 
         cancelled_generation = cancelled[0]
+        wait_for(
+            lambda: (
+                (first_generation, RegionTranslationState.OCR_READY) in delivered
+                and (
+                    cancelled_generation,
+                    RegionTranslationState.CANCELLED,
+                )
+                in delivered
+            )
+        )
         old_callback_index = delivered.index(
             (first_generation, RegionTranslationState.OCR_READY)
         )
@@ -481,17 +565,19 @@ def test_callback_delivery_and_generation_changes_are_serialized():
 
 
 def test_cancellation_requests_transport_shutdown():
-    extractor = ImmediateExtractor()
+    extractor = SequencedBlockingExtractor()
     translator = ImmediateTranslator()
     coordinator = RegionTranslationCoordinator(extractor, translator)
     try:
         coordinator.start(screenshot())
-        wait_for(lambda: coordinator.snapshot.state is RegionTranslationState.READY)
+        assert extractor.first_started.wait(1)
         coordinator.cancel()
 
         assert extractor.cancel_calls >= 1
         assert translator.cancel_calls >= 1
+        extractor.release_first.set()
     finally:
+        extractor.release_first.set()
         coordinator.close()
 
 
@@ -513,6 +599,107 @@ def test_coordinator_preserves_classified_invalid_ocr_failure():
         )
 
         assert failed.failure is RegionTranslationFailure.INVALID_TEXT_RESPONSE
+    finally:
+        coordinator.close()
+
+
+class TimeoutExtractor(ImmediateExtractor):
+    def extract(self, captured, cancel=None):
+        raise VisionModelTimeoutError("vision model timed out")
+
+
+class TimeoutTranslator(ImmediateTranslator):
+    def translate(self, source, target, cancel=None):
+        raise TranslationModelTimeoutError("translation model timed out")
+
+
+@pytest.mark.parametrize(
+    "extractor, translator, failure",
+    [
+        (
+            TimeoutExtractor(),
+            ImmediateTranslator(),
+            RegionTranslationFailure.VISION_TIMEOUT,
+        ),
+        (
+            ImmediateExtractor(),
+            TimeoutTranslator(),
+            RegionTranslationFailure.TRANSLATION_TIMEOUT,
+        ),
+    ],
+)
+def test_coordinator_preserves_model_timeout_classification(
+    extractor, translator, failure
+):
+    coordinator = RegionTranslationCoordinator(extractor, translator)
+    try:
+        coordinator.start(screenshot())
+        failed = wait_for(
+            lambda: coordinator.snapshot
+            if coordinator.snapshot.state is RegionTranslationState.FAILED
+            else None
+        )
+
+        assert failed.failure is failure
+    finally:
+        coordinator.close()
+
+
+class NonAcknowledgingExtractor(SequencedBlockingExtractor):
+    def cancel(self):
+        self.cancel_calls += 1
+        return False
+
+
+def test_replacement_reports_stopping_until_old_worker_releases():
+    extractor = NonAcknowledgingExtractor()
+    coordinator = RegionTranslationCoordinator(extractor, ImmediateTranslator())
+    try:
+        coordinator.start(screenshot())
+        assert extractor.first_started.wait(1)
+        replacement = Screenshot(
+            b"replacement", 100, 100, 100, 100, 9, 200.0, "com.apple.TextEdit"
+        )
+
+        generation = coordinator.start(replacement)
+
+        assert coordinator.snapshot.state is RegionTranslationState.STOPPING
+        assert coordinator.snapshot.generation == generation
+        extractor.release_first.set()
+        ready = wait_for(
+            lambda: coordinator.snapshot
+            if coordinator.snapshot.state is RegionTranslationState.READY
+            else None
+        )
+        assert ready.screenshot is replacement
+    finally:
+        extractor.release_first.set()
+        coordinator.close()
+
+
+def test_callback_can_synchronously_wait_for_another_thread_to_read_snapshot():
+    callback_finished = threading.Event()
+    callback_errors = []
+    coordinator = None
+
+    def on_change(item):
+        if item.state is not RegionTranslationState.READY:
+            return
+        observed = []
+        reader = threading.Thread(target=lambda: observed.append(coordinator.snapshot))
+        reader.start()
+        reader.join(0.5)
+        if reader.is_alive() or not observed:
+            callback_errors.append("snapshot reader was blocked")
+        callback_finished.set()
+
+    coordinator = RegionTranslationCoordinator(
+        ImmediateExtractor(), ImmediateTranslator(), on_change
+    )
+    try:
+        coordinator.start(screenshot())
+        assert callback_finished.wait(1)
+        assert callback_errors == []
     finally:
         coordinator.close()
 
