@@ -65,9 +65,79 @@
 
 - Phase 1 is locally verified. This is not a release claim: the isolated app was
   not notarized or accepted on a clean Mac.
-- Phase 2 has not started. No microphone, Whisper worker, VAD, TTS, voice
-  command router, direct voice click, overlay masking, or automation output
-  publication is implemented.
+- At the phase 1 boundary, Phase 2 had not started. TTS, voice command router,
+  direct voice click, overlay masking, and automation output publication remain
+  outside the current implementation.
+
+## 2026-08-24 — Voice input phase 2 in progress
+
+### Implemented so far
+
+- Added an explicit voice-session state machine with bounded push-to-talk and
+  long-input deadlines. Partial transcripts remain display-only; only final
+  transcripts complete a session.
+- Added bounded in-memory PCM buffering, energy-based VAD boundary events, and
+  a supervised local STT worker protocol with invalid-output and child-failure
+  handling. The worker does not persist audio or transcripts.
+- Added a feature-gated input coordinator and a macOS AVAudioEngine capture
+  adapter. The adapter fails closed unless the microphone is one-channel 16 kHz
+  PCM; it does not silently send a different format to the worker.
+- Added `features.voice_input: false` and validated voice configuration. The
+  existing advanced configuration can opt into the feature.
+- Bound final Whisper transcripts to the existing `TaskCoordinator`; only
+  finalized speech enters QMD/answer processing, while partial speech remains
+  overlay-only. The answer model remains the local `qwen3:8b` configuration.
+
+### Verified so far
+
+- Focused voice and configuration tests: 25 passed.
+- Python compilation and diff checks pass for the new voice modules.
+- Full repository regression after whisper.cpp/Ollama integration: 179 passed.
+- Real macOS test audio was transcribed by the local `whisper-server` as
+  “打开Safari的刷新按钮。”; local `qwen3:8b` also returned a successful
+  response through Ollama.
+- Added bounded incremental Whisper snapshots with one in-flight request and
+  generation invalidation for late partial results; the scheduling seam is
+  covered by focused tests.
+- Real large-v3-turbo-q5_0 verification produced both partial and final text;
+  the test audio produced “打开Safari的刷新按钮。” in both stages.
+
+## 2026-08-24 — Phase 3 voice answer output started
+
+### Implemented so far
+
+- Added a sentence buffer that speaks complete Chinese/English answer
+  sentences, bounds pending speech, and discards old answer generations.
+- Added an interruptible macOS `AVSpeechSynthesizer` adapter using the local
+  Chinese system voice. New voice input immediately interrupts queued speech.
+- Added independent `features.voice_output: false` gating and wired successful
+  local `qwen3:8b` answer results into sentence-level speech output.
+- Added local Ollama streaming chat support. Answer deltas now flow through the
+  generation-aware overlay and sentence buffer; cancellation closes the old
+  stream before a newer request can publish.
+
+### Verified so far
+
+- Focused Phase 3 speech/stream tests: 4 passed.
+- Full repository regression: 183 passed.
+
+### Remaining Phase 3 work
+
+- Add sentence-level speech acceptance on the real macOS app and verify TTS
+  interruption while a new recording starts. The streaming/cancellation path
+  is covered by tests but has not yet had live GUI acceptance.
+
+### Remaining Phase 2 work
+
+- The menu controls, global/local `Option-Space` press/release handling, and
+  microphone permission request entry are now implemented.
+- Bind the worker to a real whisper.cpp command/model contract, implement VAD
+  latency instrumentation, and add true incremental partial transcription;
+  final transcription and the local whisper.cpp server contract are now
+  verified with real audio.
+- Run live microphone permission, worker crash, partial/final latency, and
+  60-second stop acceptance on the development Mac. Phase 2 is not complete
+  until those checks pass.
 
 ## 2026-08-21
 
