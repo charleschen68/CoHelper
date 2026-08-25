@@ -88,6 +88,30 @@ def test_new_generation_clears_previous_text_before_ocr_finishes():
     assert current.active_view is RegionTranslationView.ORIGINAL
 
 
+def test_same_generation_late_waiting_snapshot_cannot_erase_ready_translation():
+    model = RegionTranslationPanelModel(selection())
+    ready = RegionTranslationSnapshot(
+        4,
+        RegionTranslationState.READY,
+        screenshot=screenshot(),
+        source=ExtractedText("hello", "en"),
+        target=TranslationTarget.CHINESE,
+        translation="你好",
+    )
+    assert model.apply(ready)
+    late = RegionTranslationSnapshot(
+        4,
+        RegionTranslationState.WAITING_TRANSLATION,
+        screenshot=screenshot(),
+        source=ExtractedText("hello", "en"),
+        target=TranslationTarget.CHINESE,
+    )
+
+    assert model.apply(late) is False
+    assert model.snapshot().translated_text == "你好"
+    assert model.snapshot().active_view is RegionTranslationView.TRANSLATED
+
+
 def test_original_image_is_not_copyable_and_unavailable_views_are_rejected():
     model = RegionTranslationPanelModel(selection())
     model.apply(RegionTranslationSnapshot(1, RegionTranslationState.WAITING_OCR, screenshot=screenshot()))

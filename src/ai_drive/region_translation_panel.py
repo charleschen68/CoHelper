@@ -39,6 +39,7 @@ class RegionTranslationPanelModel:
     def __init__(self, selection: RegionSelection):
         self._selection = selection
         self._generation = -1
+        self._state = RegionTranslationState.IDLE
         self._source_image = b""
         self._recognized_text: str | None = None
         self._detected_language: str | None = None
@@ -55,8 +56,18 @@ class RegionTranslationPanelModel:
         """Apply only the newest generation and retain the frozen image."""
         if snapshot.generation < self._generation:
             return False
+        if snapshot.generation == self._generation:
+            current_rank = self._state_rank(self._state)
+            incoming_rank = self._state_rank(snapshot.state, snapshot.source is not None)
+            if incoming_rank < current_rank or self._state in {
+                RegionTranslationState.READY,
+                RegionTranslationState.FAILED,
+                RegionTranslationState.CANCELLED,
+            }:
+                return False
         if snapshot.screenshot is None:
             self._generation = snapshot.generation
+            self._state = snapshot.state
             self._source_image = b""
             self._recognized_text = None
             self._detected_language = None
@@ -83,6 +94,7 @@ class RegionTranslationPanelModel:
             raise ValueError("translation panel snapshot geometry does not match selection")
         new_generation = snapshot.generation > self._generation
         self._generation = snapshot.generation
+        self._state = snapshot.state
         self._source_image = snapshot.screenshot.image
         if new_generation:
             self._recognized_text = None
@@ -105,6 +117,18 @@ class RegionTranslationPanelModel:
         elif snapshot.source is not None and self._active_view is RegionTranslationView.ORIGINAL:
             self._active_view = RegionTranslationView.RECOGNIZED
         return True
+
+    @staticmethod
+    def _state_rank(state: RegionTranslationState, has_source: bool = False) -> int:
+        if state in {RegionTranslationState.WAITING_OCR, RegionTranslationState.WAITING_LOCAL_MODEL}:
+            return 2 if state is RegionTranslationState.WAITING_LOCAL_MODEL and has_source else 0
+        if state is RegionTranslationState.OCR_READY:
+            return 1
+        if state is RegionTranslationState.WAITING_TRANSLATION:
+            return 2
+        if state in {RegionTranslationState.READY, RegionTranslationState.FAILED}:
+            return 3
+        return 0
 
     def select_target(self, target: TranslationTarget) -> TranslationTarget:
         if self._recognized_text is None:

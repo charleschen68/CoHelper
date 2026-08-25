@@ -60,6 +60,8 @@ from ai_drive.actions import (
     DesktopState,
     LocatedAccessibleTarget,
 )
+from ai_drive.region_capture import crop_screenshot
+from ai_drive.region_selection import RegionSelection
 from ai_drive.vision import OverlayMask, ScreenPoint, Screenshot, mask_screenshot
 
 
@@ -74,9 +76,12 @@ class QuartzScreenCapture:
         return bool(CGRequestScreenCaptureAccess())
 
     def capture_main_display(self) -> Screenshot:
+        return self.capture_display(int(CGMainDisplayID()))
+
+    def capture_display(self, display_id: int) -> Screenshot:
         if not self.has_permission():
             raise PermissionError("macOS Screen Recording permission is required")
-        display_id = int(CGMainDisplayID())
+        display_id = int(display_id)
         bounds = CGDisplayBounds(display_id)
         image = CGDisplayCreateImage(display_id)
         if image is None:
@@ -94,6 +99,10 @@ class QuartzScreenCapture:
             return screenshot
         mask = self._overlay_mask_provider()
         return mask_screenshot(screenshot, mask) if mask is not None else screenshot
+
+    def capture_region(self, selection: RegionSelection) -> Screenshot:
+        """Capture one display and crop it to the committed logical selection."""
+        return crop_screenshot(self.capture_display(selection.display_id), selection)
 
     def apply_overlay_mask(self, screenshot: Screenshot) -> Screenshot:
         """Apply the current mask to an already captured screenshot."""
