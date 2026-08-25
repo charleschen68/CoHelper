@@ -25,8 +25,6 @@ from AppKit import (
     NSMenu,
     NSMenuItem,
     NSModalResponseOK,
-    NSEventModifierFlagOption,
-    NSEventModifierFlagShift,
     NSOpenPanel,
     NSPopUpButton,
     NSPasteboard,
@@ -62,6 +60,7 @@ from ai_drive.output import (
     OutputSeverity,
     OutputSource,
 )
+from ai_drive.shortcuts import parse_shortcut
 from ai_drive.automation.config import AutomationConfig, AutomationConfigError, DEFAULT_CONFIG_PATH, update_scan_interval
 from apps.overlay import OutputOverlayController
 from apps.voice import MacMicrophoneCapture, MacPushToTalkMonitor, MicrophoneCaptureError
@@ -84,6 +83,35 @@ from cohelper_setup import EnvironmentDoctor, KeychainStore, SetupInstaller, Set
 
 
 OUTPUT_SOCKET_PATH = APP_SUPPORT / "output" / "events.sock"
+
+
+def build_status_menu(config):
+    """Build the user-visible menu from validated configuration."""
+    shortcut = parse_shortcut(config.section("region_translation")["shortcut"])
+    menu = NSMenu.alloc().init()
+    menu.addItemWithTitle_action_keyEquivalent_("暂停监听", "togglePause:", "")
+    menu.addItemWithTitle_action_keyEquivalent_(
+        "开始语音（按住 ⌥Space）", "startVoice:", ""
+    )
+    menu.addItemWithTitle_action_keyEquivalent_("结束并提交语音", "finishVoice:", "")
+    menu.addItemWithTitle_action_keyEquivalent_("取消语音", "cancelVoice:", "")
+    menu.addItemWithTitle_action_keyEquivalent_("确认语音操作", "confirmVoiceAction:", "")
+    menu.addItemWithTitle_action_keyEquivalent_("紧急停止语音操作", "emergencyStopVoiceActions:", "")
+    menu.addItemWithTitle_action_keyEquivalent_("恢复语音操作", "resumeVoiceActions:", "")
+    menu.addItemWithTitle_action_keyEquivalent_("环境诊断与设置", "runDiagnostics:", "")
+    menu.addItemWithTitle_action_keyEquivalent_("模型设置", "configureModels:", "")
+    menu.addItemWithTitle_action_keyEquivalent_("高级配置", "configureAdvanced:", "")
+    region_item = menu.addItemWithTitle_action_keyEquivalent_(
+        "翻译屏幕区域", "translateRegion:", shortcut.key_equivalent
+    )
+    region_item.setKeyEquivalentModifierMask_(shortcut.appkit_modifiers)
+    region_item.setEnabled_(config.enabled("region_translation"))
+    menu.addItemWithTitle_action_keyEquivalent_("请求视觉操作权限", "requestVisionPermissions:", "")
+    menu.addItemWithTitle_action_keyEquivalent_("取消环境设置", "cancelSetup:", "")
+    menu.addItemWithTitle_action_keyEquivalent_("打开配置目录", "openConfig:", "")
+    menu.addItem_(NSMenuItem.separatorItem())
+    menu.addItemWithTitle_action_keyEquivalent_("退出", "terminate:", "q")
+    return menu, region_item
 
 
 class CohelperApp(NSObject):
@@ -268,32 +296,7 @@ class CohelperApp(NSObject):
     def _build_status_item(self):
         self.status_item = NSStatusBar.systemStatusBar().statusItemWithLength_(-1)
         self.status_item.button().setTitle_("cohelper")
-        menu = NSMenu.alloc().init()
-        menu.addItemWithTitle_action_keyEquivalent_("暂停监听", "togglePause:", "")
-        voice_item = menu.addItemWithTitle_action_keyEquivalent_(
-            "开始语音", "startVoice:", " "
-        )
-        voice_item.setKeyEquivalentModifierMask_(NSEventModifierFlagOption)
-        menu.addItemWithTitle_action_keyEquivalent_("结束并提交语音", "finishVoice:", "")
-        menu.addItemWithTitle_action_keyEquivalent_("取消语音", "cancelVoice:", "")
-        menu.addItemWithTitle_action_keyEquivalent_("确认语音操作", "confirmVoiceAction:", "")
-        menu.addItemWithTitle_action_keyEquivalent_("紧急停止语音操作", "emergencyStopVoiceActions:", "")
-        menu.addItemWithTitle_action_keyEquivalent_("恢复语音操作", "resumeVoiceActions:", "")
-        menu.addItemWithTitle_action_keyEquivalent_("环境诊断与设置", "runDiagnostics:", "")
-        menu.addItemWithTitle_action_keyEquivalent_("模型设置", "configureModels:", "")
-        menu.addItemWithTitle_action_keyEquivalent_("高级配置", "configureAdvanced:", "")
-        self.region_translation_menu_item = menu.addItemWithTitle_action_keyEquivalent_(
-            "翻译屏幕区域", "translateRegion:", "t"
-        )
-        self.region_translation_menu_item.setKeyEquivalentModifierMask_(
-            NSEventModifierFlagOption | NSEventModifierFlagShift
-        )
-        self.region_translation_menu_item.setEnabled_(self.config.enabled("region_translation"))
-        menu.addItemWithTitle_action_keyEquivalent_("请求视觉操作权限", "requestVisionPermissions:", "")
-        menu.addItemWithTitle_action_keyEquivalent_("取消环境设置", "cancelSetup:", "")
-        menu.addItemWithTitle_action_keyEquivalent_("打开配置目录", "openConfig:", "")
-        menu.addItem_(NSMenuItem.separatorItem())
-        menu.addItemWithTitle_action_keyEquivalent_("退出", "terminate:", "q")
+        menu, self.region_translation_menu_item = build_status_menu(self.config)
         self.status_item.setMenu_(menu)
 
     def _start_region_translation_feature(self):
@@ -312,22 +315,50 @@ class CohelperApp(NSObject):
             ),
             on_error=lambda error: AppHelper.callAfter(self._region_translation_error, error),
         )
+        if self.region_translation_hotkey is not None:
+            try:
+                self.region_translation_hotkey.stop()
+            except Exception as exc:
+                AppHelper.callAfter(
+                    self._region_translation_hotkey_error,
+                    self.region_translation_hotkey.shortcut.display,
+                    exc,
+                )
+                return
+            self.region_translation_hotkey = None
         try:
+            shortcut = parse_shortcut(
+                self.config.section("region_translation")["shortcut"]
+            )
             hotkey = MacRegionTranslationHotKey(
-                lambda: AppHelper.callAfter(self.translateRegion_, None)
+                lambda: AppHelper.callAfter(self.translateRegion_, None),
+                shortcut,
             )
             hotkey.start()
             self.region_translation_hotkey = hotkey
         except HotKeyRegistrationError as exc:
-            self.region_translation_hotkey = None
-            AppHelper.callAfter(self._region_translation_hotkey_error, exc)
+            self.region_translation_hotkey = hotkey if hotkey.is_running else None
+            AppHelper.callAfter(
+                self._region_translation_hotkey_error,
+                shortcut.display,
+                exc,
+            )
 
     def _stop_region_translation_feature(self):
-        hotkey, self.region_translation_hotkey = self.region_translation_hotkey, None
+        hotkey = self.region_translation_hotkey
         panel, self.region_translation_panel = self.region_translation_panel, None
         runtime, self.region_translation_runtime = self.region_translation_runtime, None
         if hotkey is not None:
-            hotkey.stop()
+            try:
+                hotkey.stop()
+            except Exception as exc:
+                AppHelper.callAfter(
+                    self._region_translation_hotkey_error,
+                    hotkey.shortcut.display,
+                    exc,
+                )
+            else:
+                self.region_translation_hotkey = None
         if panel is not None:
             panel.close()
         if runtime is not None:
@@ -366,11 +397,11 @@ class CohelperApp(NSObject):
         self._set_status("cohelper (区域翻译失败)")
         self._show_error("区域翻译失败", f"{type(error).__name__}: {error}")
 
-    def _region_translation_hotkey_error(self, error):
+    def _region_translation_hotkey_error(self, shortcut_display, error):
         self._set_status("cohelper (区域翻译快捷键不可用)")
         self._show_error(
             "区域翻译快捷键不可用",
-            f"无法注册 ⌥⇧T：{error}\n\n菜单中的“翻译屏幕区域”仍然可用。",
+            f"无法注册 {shortcut_display}：{error}\n\n菜单中的“翻译屏幕区域”仍然可用。",
         )
 
     def _start_voice_feature(self):
@@ -1040,6 +1071,15 @@ class CohelperApp(NSObject):
             ("region_translation", "启用屏幕区域翻译（本机 OCR + 翻译）"),
         ):
             y = self._advanced_switch(document, y, key, title, self.config.enabled(key))
+        region_translation = self.config.section("region_translation")
+        y = self._advanced_text(
+            document,
+            y,
+            "region_translation.shortcut",
+            "区域翻译快捷键",
+            str(region_translation["shortcut"]),
+            placeholder="例如 Option-Shift-T",
+        )
         y = self._advanced_switch(document, y, "allow_external_api", "允许外部 API（默认关闭）", bool(self.config.section("privacy")["allow_external_api"]))
 
         y -= 12
@@ -1400,6 +1440,9 @@ class CohelperApp(NSObject):
         previous_voice_output_enabled = self.config.enabled("voice_output")
         previous_voice_direct_enabled = self.config.enabled("voice_direct_actions")
         previous_region_translation_enabled = self.config.enabled("region_translation")
+        previous_region_translation_shortcut = self.config.section(
+            "region_translation"
+        )["shortcut"]
         self.config = candidate
         config_generation = self.coordinator.update_config(candidate)
         self.output_generation = max(self.output_generation, config_generation)
@@ -1411,12 +1454,20 @@ class CohelperApp(NSObject):
             self._start_voice_feature()
         elif previous_voice_enabled and not candidate.enabled("voice_input"):
             self._stop_voice_feature()
-        if candidate.enabled("region_translation") and not previous_region_translation_enabled:
-            self._start_region_translation_feature()
-        elif previous_region_translation_enabled and not candidate.enabled("region_translation"):
+        if candidate.enabled("region_translation"):
+            if not previous_region_translation_enabled:
+                self._start_region_translation_feature()
+            elif (
+                candidate.section("region_translation")["shortcut"]
+                != previous_region_translation_shortcut
+            ):
+                self._stop_region_translation_feature()
+                self._start_region_translation_feature()
+        elif previous_region_translation_enabled:
             self._stop_region_translation_feature()
-        if self.region_translation_menu_item is not None:
-            self.region_translation_menu_item.setEnabled_(candidate.enabled("region_translation"))
+        if self.status_item is not None:
+            menu, self.region_translation_menu_item = build_status_menu(candidate)
+            self.status_item.setMenu_(menu)
         if candidate.enabled("voice_output") and not previous_voice_output_enabled:
             self._start_speech_feature()
         elif previous_voice_output_enabled and not candidate.enabled("voice_output"):

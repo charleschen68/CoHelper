@@ -1,4 +1,25 @@
+from AppKit import NSApplication
+
 from cohelper_app import CohelperApp
+from cohelper_core import Config
+
+
+def test_region_translation_shortcut_is_editable_in_configuration_center():
+    NSApplication.sharedApplication()
+    app = CohelperApp.alloc().init()
+    app.config = Config(
+        {"region_translation": {"shortcut": "Command-Option-R"}}
+    )
+
+    try:
+        app._build_advanced_config_window()
+
+        control = app.advanced_controls["region_translation.shortcut"]
+        assert str(control.stringValue()) == "Command-Option-R"
+    finally:
+        app.advanced_window.orderOut_(None)
+        app.advanced_window.close()
+        app.advanced_window = None
 
 
 def test_voice_command_form_round_trips_human_readable_entries():

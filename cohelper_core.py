@@ -21,6 +21,8 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
+from ai_drive.shortcuts import parse_shortcut
+
 from apps.clipboard_helper.service import route_clipboard_text
 from ai_drive.voice.router import VoiceCommandRouter, VoiceCommandRouterError
 from ai_drive.model_scheduler import (
@@ -52,6 +54,7 @@ DEFAULT_CONFIG = {
     "knowledge": {"collection": "jarvis-wiki", "source_path": "", "limit": 5, "query_timeout_seconds": 20, "max_summary_source_chars": 50000},
     "translation": {"provider": "ollama", "model": "translategemma:4b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 60, "credential_account": "translation"},
     "region_translation": {
+        "shortcut": "Option-Shift-T",
         "ocr_model": "qwen2.5vl:7b",
         "translation_model": "translategemma:4b",
         "ocr_base_url": "http://127.0.0.1:11434",
@@ -188,6 +191,12 @@ class Config:
         if vision.get("model") != "qwen2.5vl:7b":
             raise ConfigError("vision.model 必须是 qwen2.5vl:7b")
         region_translation = self.values["region_translation"]
+        try:
+            region_translation["shortcut"] = parse_shortcut(
+                region_translation.get("shortcut", "")
+            ).canonical
+        except ValueError as exc:
+            raise ConfigError(f"region_translation.shortcut 无效：{exc}") from exc
         if region_translation.get("ocr_model") != "qwen2.5vl:7b":
             raise ConfigError("region_translation.ocr_model 必须是 qwen2.5vl:7b")
         if region_translation.get("translation_model") != "translategemma:4b":

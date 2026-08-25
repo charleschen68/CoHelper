@@ -9,16 +9,18 @@
   text, and translated text, with target selection, copy, and retry controls.
 - Added a configuration-center switch for `features.region_translation`; saving
   the switch starts or stops the runtime and updates the status-bar item.
-- Added a permission-free global `Option-Shift-T` registration that starts the
-  same explicit selection flow as the status-bar item, and displays the
-  shortcut in the native menu. The existing voice gesture is displayed as
-  `Option-Space`; unsafe and low-frequency actions remain unbound.
+- Added a configurable, permission-free global shortcut (default
+  `Option-Shift-T`) that starts the same explicit selection flow as the
+  status-bar item. One validated shortcut specification drives the native menu
+  and Carbon registration. The existing voice gesture is displayed as “按住
+  `Option-Space`” without binding it to a menu action; unsafe and low-frequency
+  actions remain unbound.
 - Kept OCR and translation on loopback Ollama using `qwen2.5vl:7b` and
   `translategemma:4b`, with shared local-model scheduling.
 
 ### Verified
 
-- Full regression suite: 312 passed.
+- Full regression suite: 325 passed.
 - Screen Recording permission is currently available on this Mac.
 - A real local Ollama probe completed OCR (`Hello world`) and translation
   (`你好，世界`) with final state `ready`.

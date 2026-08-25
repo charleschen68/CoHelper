@@ -36,6 +36,11 @@ load its modules, diagnose its models, or call them. Enabling it registers a
 configurable global shortcut whose default is `Option-Shift-T`, and adds a
 menu-bar item named `翻译屏幕区域`.
 
+Shortcut configuration uses one or more of `Command`, `Control`, `Option`, and
+`Shift`, followed by one ANSI letter or digit. The menu and native registration
+must use the same parsed shortcut. Registration is non-exclusive so CoHelper
+never suppresses another application's binding.
+
 Triggering either entry point starts one explicit selection session on the
 display containing the pointer. A selection cannot cross displays and must be
 at least 120 by 80 logical points. `Escape` cancels without capturing or calling

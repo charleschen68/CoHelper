@@ -7,12 +7,18 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
+from ai_drive.shortcuts import ShortcutSpec
+
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class HotKeyRegistrationError(RuntimeError):
     """Raised when the region-translation shortcut cannot be registered."""
+
+    def __init__(self, message: str, *, registration=None):
+        super().__init__(message)
+        self.registration = registration
 
 
 class _EventTypeSpec(ctypes.Structure):
@@ -33,8 +39,8 @@ _EventHandler = ctypes.CFUNCTYPE(
 
 @dataclass
 class _CarbonRegistration:
-    hot_key_ref: ctypes.c_void_p
-    handler_ref: ctypes.c_void_p
+    hot_key_ref: ctypes.c_void_p | None
+    handler_ref: ctypes.c_void_p | None
     handler: object
 
 
@@ -56,13 +62,17 @@ class _CarbonHotKeyBackend:
     SIGNATURE = _four_char_code("CoRT")
     IDENTIFIER = 1
 
-    def __init__(self):
-        try:
-            self._carbon = ctypes.CDLL(
-                "/System/Library/Frameworks/Carbon.framework/Carbon"
-            )
-        except OSError as exc:
-            raise HotKeyRegistrationError("macOS global hotkey API is unavailable") from exc
+    def __init__(self, carbon=None):
+        if carbon is None:
+            try:
+                carbon = ctypes.CDLL(
+                    "/System/Library/Frameworks/Carbon.framework/Carbon"
+                )
+            except OSError as exc:
+                raise HotKeyRegistrationError(
+                    "macOS global hotkey API is unavailable"
+                ) from exc
+        self._carbon = carbon
         self._configure_functions()
 
     def _configure_functions(self) -> None:
@@ -130,25 +140,7 @@ class _CarbonHotKeyBackend:
                 )
             return 0
 
-        event_type = _EventTypeSpec(
-            self.EVENT_CLASS_KEYBOARD,
-            self.EVENT_HOTKEY_PRESSED,
-        )
-        handler_ref = ctypes.c_void_p()
         target = self._carbon.GetApplicationEventTarget()
-        status = self._carbon.InstallEventHandler(
-            target,
-            handler,
-            1,
-            ctypes.byref(event_type),
-            None,
-            ctypes.byref(handler_ref),
-        )
-        if status != 0:
-            raise HotKeyRegistrationError(
-                f"failed to install macOS hotkey handler (status {status})"
-            )
-
         hot_key_ref = ctypes.c_void_p()
         status = self._carbon.RegisterEventHotKey(
             int(key_code),
@@ -159,29 +151,74 @@ class _CarbonHotKeyBackend:
             ctypes.byref(hot_key_ref),
         )
         if status != 0:
-            self._carbon.RemoveEventHandler(handler_ref)
             if status == self.EVENT_HOTKEY_EXISTS:
                 raise HotKeyRegistrationError(
-                    "Option-Shift-T is already registered by another application"
+                    "global shortcut is already registered by another application"
                 )
             raise HotKeyRegistrationError(
-                f"failed to register Option-Shift-T (status {status})"
+                f"failed to register global shortcut (status {status})"
+            )
+
+        event_type = _EventTypeSpec(
+            self.EVENT_CLASS_KEYBOARD,
+            self.EVENT_HOTKEY_PRESSED,
+        )
+        handler_ref = ctypes.c_void_p()
+        status = self._carbon.InstallEventHandler(
+            target,
+            handler,
+            1,
+            ctypes.byref(event_type),
+            None,
+            ctypes.byref(handler_ref),
+        )
+        if status != 0:
+            rollback_status = self._carbon.UnregisterEventHotKey(hot_key_ref)
+            if rollback_status != 0:
+                registration = _CarbonRegistration(hot_key_ref, None, handler)
+                raise HotKeyRegistrationError(
+                    "failed to install macOS hotkey handler "
+                    f"(status {status}); rollback also failed with status "
+                    f"{rollback_status}",
+                    registration=registration,
+                )
+            raise HotKeyRegistrationError(
+                f"failed to install macOS hotkey handler (status {status})"
             )
         return _CarbonRegistration(hot_key_ref, handler_ref, handler)
 
     def unregister(self, registration) -> None:
-        self._carbon.UnregisterEventHotKey(registration.hot_key_ref)
-        self._carbon.RemoveEventHandler(registration.handler_ref)
+        failures = []
+        if registration.hot_key_ref is not None:
+            status = self._carbon.UnregisterEventHotKey(registration.hot_key_ref)
+            if status == 0:
+                registration.hot_key_ref = None
+            else:
+                failures.append(f"unregister status {status}")
+        if registration.handler_ref is not None:
+            status = self._carbon.RemoveEventHandler(registration.handler_ref)
+            if status == 0:
+                registration.handler_ref = None
+            else:
+                failures.append(f"handler removal status {status}")
+        if failures:
+            raise HotKeyRegistrationError(
+                "failed to clean up global shortcut: " + ", ".join(failures)
+            )
 
 
 class MacRegionTranslationHotKey:
-    """Own the global Option-Shift-T registration for one enabled runtime."""
+    """Own one configured global shortcut registration for the enabled runtime."""
 
-    T_KEY_CODE = 0x11
-    OPTION_SHIFT = (1 << 11) | (1 << 9)
-
-    def __init__(self, on_pressed: Callable[[], None], *, backend=None):
+    def __init__(
+        self,
+        on_pressed: Callable[[], None],
+        shortcut: ShortcutSpec,
+        *,
+        backend=None,
+    ):
         self._on_pressed = on_pressed
+        self._shortcut = shortcut
         self._backend = backend or _CarbonHotKeyBackend()
         self._registration = None
 
@@ -189,20 +226,31 @@ class MacRegionTranslationHotKey:
     def is_running(self) -> bool:
         return self._registration is not None
 
+    @property
+    def shortcut(self) -> ShortcutSpec:
+        return self._shortcut
+
     def start(self) -> None:
         if self._registration is not None:
             return
-        self._registration = self._backend.register(
-            self.T_KEY_CODE,
-            self.OPTION_SHIFT,
-            self._on_pressed,
-            exclusive=True,
-        )
+        try:
+            self._registration = self._backend.register(
+                self._shortcut.carbon_key_code,
+                self._shortcut.carbon_modifiers,
+                self._on_pressed,
+                # Never suppress another application's non-exclusive binding.
+                exclusive=False,
+            )
+        except HotKeyRegistrationError as exc:
+            if exc.registration is not None:
+                self._registration = exc.registration
+            raise
 
     def stop(self) -> None:
-        registration, self._registration = self._registration, None
-        if registration is not None:
-            self._backend.unregister(registration)
+        if self._registration is None:
+            return
+        self._backend.unregister(self._registration)
+        self._registration = None
 
 
 __all__ = ["HotKeyRegistrationError", "MacRegionTranslationHotKey"]

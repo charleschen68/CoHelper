@@ -6,6 +6,7 @@ features:
   # Explicitly opt in only after installing and validating local Whisper.
   voice_input: false
   voice_output: false
+  region_translation: false
 
 privacy:
   allow_external_api: false
@@ -53,6 +54,17 @@ vision:
   model: qwen2.5vl:7b
   base_url: http://127.0.0.1:11434
   timeout_seconds: 90
+
+region_translation:
+  # One or more modifiers plus an ANSI letter/digit; shown in the status menu.
+  shortcut: Option-Shift-T
+  ocr_model: qwen2.5vl:7b
+  translation_model: translategemma:4b
+  ocr_base_url: http://127.0.0.1:11434
+  translation_base_url: http://127.0.0.1:11434
+  ocr_timeout_seconds: 60
+  translation_timeout_seconds: 60
+  queue_timeout_seconds: 30
 
 voice:
   sample_rate: 16000
