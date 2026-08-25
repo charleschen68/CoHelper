@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 
@@ -9,6 +10,7 @@ from ai_drive.region_capture import RegionSelection
 from ai_drive.region_translation import (
     RegionTranslationSnapshot,
     RegionTranslationState,
+    TranslationTarget,
 )
 
 
@@ -24,6 +26,8 @@ class RegionTranslationPanelSnapshot:
     selection: RegionSelection
     source_image: bytes
     recognized_text: str | None
+    detected_language: str | None
+    target: TranslationTarget | None
     translated_text: str | None
     active_view: RegionTranslationView
     retry_available: bool
@@ -37,6 +41,8 @@ class RegionTranslationPanelModel:
         self._generation = -1
         self._source_image = b""
         self._recognized_text: str | None = None
+        self._detected_language: str | None = None
+        self._target: TranslationTarget | None = None
         self._translated_text: str | None = None
         self._active_view = RegionTranslationView.ORIGINAL
         self._retry_available = False
@@ -53,21 +59,42 @@ class RegionTranslationPanelModel:
             self._generation = snapshot.generation
             self._source_image = b""
             self._recognized_text = None
+            self._detected_language = None
+            self._target = None
             self._translated_text = None
             self._active_view = RegionTranslationView.ORIGINAL
             self._retry_available = False
             return True
         if snapshot.screenshot.display_id != self._selection.display_id:
             raise ValueError("translation panel snapshot belongs to another display")
+        geometry = (
+            snapshot.screenshot.origin_x,
+            snapshot.screenshot.origin_y,
+            snapshot.screenshot.logical_width,
+            snapshot.screenshot.logical_height,
+        )
+        expected = (
+            self._selection.x,
+            self._selection.y,
+            self._selection.width,
+            self._selection.height,
+        )
+        if not all(math.isclose(actual, wanted, rel_tol=0, abs_tol=0.01) for actual, wanted in zip(geometry, expected)):
+            raise ValueError("translation panel snapshot geometry does not match selection")
         new_generation = snapshot.generation > self._generation
         self._generation = snapshot.generation
         self._source_image = snapshot.screenshot.image
         if new_generation:
             self._recognized_text = None
+            self._detected_language = None
+            self._target = None
             self._translated_text = None
             self._active_view = RegionTranslationView.ORIGINAL
         if snapshot.source is not None:
             self._recognized_text = snapshot.source.text
+            self._detected_language = snapshot.source.detected_language
+        if snapshot.target is not None:
+            self._target = snapshot.target
         self._translated_text = snapshot.translation
         self._retry_available = snapshot.state in {
             RegionTranslationState.READY,
@@ -78,6 +105,15 @@ class RegionTranslationPanelModel:
         elif snapshot.source is not None and self._active_view is RegionTranslationView.ORIGINAL:
             self._active_view = RegionTranslationView.RECOGNIZED
         return True
+
+    def select_target(self, target: TranslationTarget) -> TranslationTarget:
+        if self._recognized_text is None:
+            raise ValueError("recognized text is not available")
+        self._target = target
+        self._translated_text = None
+        self._active_view = RegionTranslationView.RECOGNIZED
+        self._retry_available = False
+        return target
 
     def select_view(self, view: RegionTranslationView) -> None:
         if view is RegionTranslationView.RECOGNIZED and self._recognized_text is None:
@@ -109,6 +145,8 @@ class RegionTranslationPanelModel:
             self._selection,
             self._source_image,
             self._recognized_text,
+            self._detected_language,
+            self._target,
             self._translated_text,
             self._active_view,
             self._retry_available,

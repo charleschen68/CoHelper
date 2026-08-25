@@ -149,6 +149,7 @@ def default_target_for(source: ExtractedText) -> TranslationTarget:
 class RegionTranslationState(str, Enum):
     IDLE = "idle"
     WAITING_OCR = "waiting_ocr"
+    WAITING_LOCAL_MODEL = "waiting_local_model"
     OCR_READY = "ocr_ready"
     STOPPING = "stopping"
     WAITING_TRANSLATION = "waiting_translation"
@@ -198,12 +199,16 @@ class RegionTranslationSnapshot:
             return
         if self.screenshot is None:
             raise ValueError(f"{self.state.value} snapshot requires a screenshot")
-        if self.state is RegionTranslationState.WAITING_OCR:
+        if self.state in {
+            RegionTranslationState.WAITING_OCR,
+            RegionTranslationState.WAITING_LOCAL_MODEL,
+        }:
             if any(
-                value is not None
-                for value in (self.source, self.target, self.translation, self.failure)
+                value is not None for value in (self.translation, self.failure)
             ):
-                raise ValueError("waiting_ocr snapshot contains premature results")
+                raise ValueError("waiting snapshot contains premature results")
+            if (self.source is None) is not (self.target is None):
+                raise ValueError("waiting snapshot has an incomplete translation input")
             return
         if self.state is RegionTranslationState.STOPPING:
             if self.translation is not None or self.failure is not None:
@@ -287,6 +292,11 @@ class ScreenshotTextExtractor:
 
     def cancel(self) -> bool:
         return self._client.cancel() is True
+
+    def set_scheduler_callbacks(self, on_queue_wait=None, on_model_started=None) -> None:
+        setter = getattr(self._client, "set_scheduler_callbacks", None)
+        if setter is not None:
+            setter(on_queue_wait, on_model_started)
 
     @staticmethod
     def _prompt() -> str:
@@ -385,6 +395,11 @@ class RegionTranslationService:
 
     def cancel(self) -> bool:
         return self._client.cancel() is True
+
+    def set_scheduler_callbacks(self, on_queue_wait=None, on_model_started=None) -> None:
+        setter = getattr(self._client, "set_scheduler_callbacks", None)
+        if setter is not None:
+            setter(on_queue_wait, on_model_started)
 
 
 class RegionTranslationCoordinator:
@@ -568,6 +583,27 @@ class RegionTranslationCoordinator:
         screenshot: Screenshot,
         cancel: threading.Event,
     ) -> None:
+        self._set_scheduler_callbacks(
+            self._extractor,
+            lambda: self._publish(
+                generation,
+                RegionTranslationSnapshot(
+                    generation,
+                    RegionTranslationState.WAITING_LOCAL_MODEL,
+                    screenshot=screenshot,
+                ),
+                cancel,
+            ),
+            lambda: self._publish(
+                generation,
+                RegionTranslationSnapshot(
+                    generation,
+                    RegionTranslationState.WAITING_OCR,
+                    screenshot=screenshot,
+                ),
+                cancel,
+            ),
+        )
         try:
             source = self._extractor.extract(screenshot, cancel)
         except TextExtractionCancelledError:
@@ -664,6 +700,31 @@ class RegionTranslationCoordinator:
     ) -> None:
         if not already_waiting and not self._is_current(generation, cancel):
             return
+        self._set_scheduler_callbacks(
+            self._translator,
+            lambda: self._publish(
+                generation,
+                RegionTranslationSnapshot(
+                    generation,
+                    RegionTranslationState.WAITING_LOCAL_MODEL,
+                    screenshot=screenshot,
+                    source=source,
+                    target=target,
+                ),
+                cancel,
+            ),
+            lambda: self._publish(
+                generation,
+                RegionTranslationSnapshot(
+                    generation,
+                    RegionTranslationState.WAITING_TRANSLATION,
+                    screenshot=screenshot,
+                    source=source,
+                    target=target,
+                ),
+                cancel,
+            ),
+        )
         try:
             translation = self._translator.translate(source, target, cancel)
         except RegionTranslationCancelledError:
@@ -783,6 +844,12 @@ class RegionTranslationCoordinator:
     def _require_open(self) -> None:
         if self._closed:
             raise RuntimeError("region translation coordinator is closed")
+
+    @staticmethod
+    def _set_scheduler_callbacks(service, on_queue_wait, on_model_started) -> None:
+        setter = getattr(service, "set_scheduler_callbacks", None)
+        if setter is not None:
+            setter(on_queue_wait, on_model_started)
 
     def _cancel_active_locked(self) -> bool:
         self._cancel.set()

@@ -6,6 +6,7 @@ import base64
 import json
 import threading
 from io import BytesIO
+from typing import Callable
 from urllib.parse import urlparse
 
 from PIL import Image
@@ -42,6 +43,8 @@ class _OllamaStreamingClient:
         session=requests,
         scheduler: ModelScheduler = DEFAULT_MODEL_SCHEDULER,
         queue_timeout: int = 30,
+        on_queue_wait: Callable[[], None] | None = None,
+        on_model_started: Callable[[], None] | None = None,
     ):
         host = urlparse(base_url).hostname
         parsed = urlparse(base_url)
@@ -55,12 +58,18 @@ class _OllamaStreamingClient:
         self._timeout = timeout
         self._scheduler = scheduler
         self._queue_timeout = queue_timeout
+        self._on_queue_wait = on_queue_wait
+        self._on_model_started = on_model_started
         self._session = session
         self._lock = threading.RLock()
         self._response = None
         self._request_active = False
         self._request_token = 0
         self._cancel_requested = False
+
+    def set_scheduler_callbacks(self, on_queue_wait=None, on_model_started=None) -> None:
+        self._on_queue_wait = on_queue_wait
+        self._on_model_started = on_model_started
 
     def cancel(self) -> bool:
         return self._cancel_for_token(None)
@@ -122,6 +131,8 @@ class _OllamaStreamingClient:
                     timeout=self._queue_timeout,
                     cancel=cancel,
                     cancel_check=self._cancelled,
+                    on_waiting=self._on_queue_wait,
+                    on_acquired=self._on_model_started,
                 )
             except ModelQueueCancelled as exc:
                 raise RegionTransportCancelled("model request was cancelled") from exc

@@ -61,3 +61,29 @@ def test_same_endpoint_and_model_are_serialized_but_other_models_are_independent
     with pytest.raises(ModelQueueTimeout):
         scheduler.acquire("endpoint", "model", timeout=0.02)
     held.release()
+
+
+def test_scheduler_reports_waiting_and_acquired_callbacks_outside_the_lease():
+    scheduler = ModelScheduler()
+    held = scheduler.acquire("endpoint", "model")
+    events = []
+    result = []
+
+    def run():
+        with scheduler.acquire(
+            "endpoint",
+            "model",
+            timeout=1,
+            on_waiting=lambda: events.append("waiting"),
+            on_acquired=lambda: events.append("acquired"),
+        ):
+            result.append("ran")
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    time.sleep(0.05)
+    held.release()
+    worker.join(1)
+
+    assert events == ["waiting", "acquired"]
+    assert result == ["ran"]

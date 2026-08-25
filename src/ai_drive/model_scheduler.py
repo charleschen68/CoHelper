@@ -5,7 +5,11 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
+import logging
 from typing import Callable
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ModelQueueTimeout(TimeoutError):
@@ -66,6 +70,8 @@ class ModelScheduler:
         timeout: float = 30.0,
         cancel: threading.Event | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        on_waiting: Callable[[], None] | None = None,
+        on_acquired: Callable[[], None] | None = None,
     ) -> ModelLease:
         if timeout <= 0:
             raise ValueError("model queue timeout must be positive")
@@ -77,9 +83,13 @@ class ModelScheduler:
                 self._states[key] = state
             self._sequence += 1
             waiter = (priority, self._sequence, object())
+            was_busy = state.active or bool(state.waiters)
             state.waiters.append(waiter)
             deadline = self._clock() + timeout
-            while True:
+        if was_busy and on_waiting is not None:
+            self._notify(on_waiting)
+        while True:
+            with self._lock:
                 cancelled = (cancel is not None and cancel.is_set()) or (
                     cancel_check is not None and cancel_check()
                 )
@@ -90,13 +100,24 @@ class ModelScheduler:
                 if not state.active and min(state.waiters) == waiter:
                     state.waiters.remove(waiter)
                     state.active = True
-                    return ModelLease(state)
+                    lease = ModelLease(state)
+                    break
                 remaining = deadline - self._clock()
                 if remaining <= 0:
                     state.waiters.remove(waiter)
                     state.condition.notify_all()
                     raise ModelQueueTimeout("local model queue timed out")
                 state.condition.wait(min(0.05, remaining))
+        if on_acquired is not None:
+            self._notify(on_acquired)
+        return lease
+
+    @staticmethod
+    def _notify(callback: Callable[[], None]) -> None:
+        try:
+            callback()
+        except Exception as exc:
+            _LOGGER.debug("model scheduler observer failed: %s", type(exc).__name__)
 
 
 DEFAULT_MODEL_SCHEDULER = ModelScheduler()

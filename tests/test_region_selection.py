@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from ai_drive.region_capture import RegionSelectionError
@@ -60,6 +62,45 @@ def test_retrigger_replaces_old_session_and_invalid_drag_never_captures():
     assert session.snapshot().screenshot is None
 
 
+def test_invalid_drag_clears_previous_valid_candidate():
+    session = RegionSelectionSession()
+    session.begin(7, (100, 50), (600, 400))
+    session.update_drag((200, 100), (400, 250))
+    with pytest.raises(RegionSelectionError):
+        session.update_drag((200, 100), (250, 150))
+    with pytest.raises(RegionSelectionError, match="valid selection"):
+        session.finish(capture)
+
+
+def test_capture_result_cannot_resurrect_after_concurrent_retrigger():
+    session = RegionSelectionSession()
+    session.begin(7, (100, 50), (600, 400))
+    session.update_drag((200, 100), (400, 250))
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_capture(selection):
+        entered.set()
+        assert release.wait(1)
+        return capture(selection)
+
+    errors = []
+    worker = threading.Thread(
+        target=lambda: _capture_error(errors, lambda: session.finish(blocking_capture))
+    )
+    worker.start()
+    assert entered.wait(1)
+    session.begin(8, (0, 0), (600, 400))
+    release.set()
+    worker.join(1)
+
+    assert not worker.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], RegionSelectionError)
+    assert session.snapshot().generation == 2
+    assert session.snapshot().state is RegionSelectionState.SELECTING
+
+
 def test_capture_must_return_the_selected_display():
     session = RegionSelectionSession()
     session.begin(7, (100, 50), (600, 400))
@@ -69,3 +110,22 @@ def test_capture_must_return_the_selected_display():
     with pytest.raises(RegionSelectionError, match="another display"):
         session.finish(wrong_display)
     assert session.snapshot().state is RegionSelectionState.FAILED
+
+
+def _capture_error(errors, operation):
+    try:
+        operation()
+    except Exception as exc:
+        errors.append(exc)
+
+
+def test_capture_must_return_pixels_aligned_to_the_selection():
+    session = RegionSelectionSession()
+    session.begin(7, (100, 50), (600, 400))
+    session.update_drag((200, 100), (400, 250))
+    wrong_geometry = lambda selection: Screenshot(
+        b"x", 600, 400, 300, 200, 7, 10.0, "app", 100, 50
+    )
+
+    with pytest.raises(RegionSelectionError, match="geometry"):
+        session.finish(wrong_geometry)

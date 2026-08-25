@@ -11,7 +11,7 @@ from ai_drive.vision import Screenshot
 
 
 def screenshot() -> Screenshot:
-    return Screenshot(b"frozen", 600, 400, 300, 200, 7, 10.0, "app", 100, 50)
+    return Screenshot(b"frozen", 600, 400, 200, 120, 7, 10.0, "app", 120, 80)
 
 
 def selection() -> RegionSelection:
@@ -34,10 +34,15 @@ def test_panel_defaults_to_original_then_translation_and_supports_explicit_copy(
         )
     )
     assert model.snapshot().active_view is RegionTranslationView.TRANSLATED
+    assert model.snapshot().detected_language == "en"
+    assert model.snapshot().target is TranslationTarget.CHINESE
     model.select_view(RegionTranslationView.RECOGNIZED)
     assert model.copy_text() == "hello"
     model.select_view(RegionTranslationView.TRANSLATED)
     assert model.copy_text() == "你好"
+    assert model.select_target(TranslationTarget.ENGLISH) is TranslationTarget.ENGLISH
+    assert model.snapshot().target is TranslationTarget.ENGLISH
+    assert model.snapshot().active_view is RegionTranslationView.RECOGNIZED
 
 
 def test_panel_rejects_stale_results_and_exposes_retry_after_failure():
