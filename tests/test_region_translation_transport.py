@@ -111,9 +111,10 @@ def test_vision_payload_downscales_oversized_image_before_base64_encoding():
 
 
 @pytest.mark.parametrize("client", [OllamaRegionVisionClient, OllamaRegionTranslationClient])
-def test_transport_rejects_non_loopback_endpoint(client):
+@pytest.mark.parametrize("endpoint", ["https://example.com", "ftp://127.0.0.1:11434"])
+def test_transport_rejects_non_loopback_endpoint(client, endpoint):
     with pytest.raises(ValueError, match="local"):
-        client("https://example.com")
+        client(endpoint)
 
 
 def test_transport_rejects_malformed_stream_rows():
@@ -129,6 +130,14 @@ def test_transport_rejects_stream_without_done_marker():
     client = OllamaRegionTranslationClient(session=FakeSession(response))
 
     with pytest.raises(RegionTransportError, match="done"):
+        client.complete("translategemma:4b", "system", "user")
+
+
+def test_transport_rejects_ollama_error_rows():
+    response = FakeResponse([json.dumps({"error": "model missing", "done": True})])
+    client = OllamaRegionTranslationClient(session=FakeSession(response))
+
+    with pytest.raises(RegionTransportError, match="error"):
         client.complete("translategemma:4b", "system", "user")
 
 
@@ -176,6 +185,29 @@ def test_cancel_reports_stopping_while_session_post_is_blocked():
     worker.join(1)
 
     assert not worker.is_alive()
+    assert len(errors) == 1
+
+
+def test_cancel_event_closes_active_response_without_direct_client_cancel():
+    response = FakeResponse([row("partial"), "__BLOCK__"])
+    session = FakeSession(response)
+    client = OllamaRegionTranslationClient(session=session)
+    cancel = threading.Event()
+    errors = []
+
+    worker = threading.Thread(
+        target=lambda: _capture_error(
+            errors,
+            lambda: client.complete("translategemma:4b", "system", "user", cancel),
+        )
+    )
+    worker.start()
+    assert response.started.wait(1)
+    cancel.set()
+    worker.join(2)
+
+    assert not worker.is_alive()
+    assert response.closed is True
     assert len(errors) == 1
 
 

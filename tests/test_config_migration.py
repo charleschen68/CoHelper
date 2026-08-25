@@ -60,6 +60,13 @@ def test_region_translation_models_and_endpoint_are_local_and_fixed():
         Config({"region_translation": {"translation_model": "other"}})
     with pytest.raises(ConfigError, match="region_translation"):
         Config({"region_translation": {"translation_base_url": "https://example.com"}})
+    with pytest.raises(ConfigError, match="region_translation"):
+        Config({"region_translation": {"ocr_base_url": "ftp://127.0.0.1:11434"}})
+
+
+def test_region_translation_timeouts_are_fixed_product_boundaries():
+    with pytest.raises(ConfigError, match="超时必须固定"):
+        Config({"region_translation": {"queue_timeout_seconds": 3600}})
 
 
 def test_voice_input_is_disabled_by_default_and_validates_audio_boundary():

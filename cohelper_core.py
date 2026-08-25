@@ -189,7 +189,7 @@ class Config:
             raise ConfigError("region_translation.translation_model 必须是 translategemma:4b")
         for key in ("ocr_base_url", "translation_base_url"):
             endpoint = urlparse(str(region_translation.get(key, "")))
-            if endpoint.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            if endpoint.scheme not in {"http", "https"} or endpoint.hostname not in {"127.0.0.1", "localhost", "::1"}:
                 raise ConfigError(f"region_translation.{key} 必须是本机 Ollama 地址")
         try:
             region_timeouts = [
@@ -199,8 +199,9 @@ class Config:
             ]
         except (KeyError, TypeError, ValueError) as exc:
             raise ConfigError(f"region_translation 数值配置无效：{exc}") from exc
-        if any(timeout <= 0 for timeout in region_timeouts):
-            raise ConfigError("region_translation 超时配置必须大于 0")
+        expected_timeouts = (60, 60, 30)
+        if tuple(region_timeouts) != expected_timeouts:
+            raise ConfigError("region_translation 超时必须固定为 OCR 60 秒、翻译 60 秒、排队 30 秒")
         voice = self.values["voice"]
         if voice.get("sample_rate") != 16_000 or voice.get("channels") != 1:
             raise ConfigError("voice 必须使用 16 kHz mono")

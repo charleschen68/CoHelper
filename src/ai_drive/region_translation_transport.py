@@ -13,6 +13,7 @@ import requests
 
 
 MAX_VISION_LONG_EDGE = 3072
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 class RegionTransportError(RuntimeError):
@@ -26,7 +27,8 @@ class RegionTransportCancelled(RegionTransportError):
 class _OllamaStreamingClient:
     def __init__(self, base_url: str = "http://127.0.0.1:11434", timeout: int = 60, session=requests):
         host = urlparse(base_url).hostname
-        if host not in {"127.0.0.1", "localhost", "::1"}:
+        parsed = urlparse(base_url)
+        if parsed.scheme not in {"http", "https"} or host not in _LOOPBACK_HOSTS:
             raise ValueError("region translation endpoint must be local")
         if timeout <= 0:
             raise ValueError("region translation timeout must be positive")
@@ -52,7 +54,14 @@ class _OllamaStreamingClient:
             return False
         return True
 
-    def _stream(self, model: str, messages: list[dict], *, format_json: bool = False) -> str:
+    def _stream(
+        self,
+        model: str,
+        messages: list[dict],
+        *,
+        format_json: bool = False,
+        cancel: threading.Event | None = None,
+    ) -> str:
         with self._lock:
             if self._request_active:
                 raise RegionTransportError("concurrent local model request")
@@ -62,6 +71,16 @@ class _OllamaStreamingClient:
         if format_json:
             payload["format"] = "json"
         response = None
+        watcher_stop = threading.Event()
+        watcher = None
+        if cancel is not None:
+            watcher = threading.Thread(
+                target=self._watch_cancel,
+                args=(cancel, watcher_stop),
+                name="region-translation-cancel",
+                daemon=True,
+            )
+            watcher.start()
         try:
             response = self._session.post(
                 f"{self.endpoint}/api/chat",
@@ -90,7 +109,9 @@ class _OllamaStreamingClient:
                     raise RegionTransportError("Ollama stream row is not JSON") from exc
                 if not isinstance(body, dict):
                     raise RegionTransportError("Ollama stream row is not an object")
-                message = body.get("message") or {}
+                if "error" in body:
+                    raise RegionTransportError("Ollama stream reported an error")
+                message = body.get("message")
                 if not isinstance(message, dict):
                     raise RegionTransportError("Ollama stream message is invalid")
                 content = message.get("content")
@@ -107,6 +128,9 @@ class _OllamaStreamingClient:
                 raise RegionTransportError("Ollama stream ended without done marker")
             return "".join(parts)
         finally:
+            watcher_stop.set()
+            if watcher is not None:
+                watcher.join(timeout=1)
             if response is not None:
                 response.close()
             with self._lock:
@@ -117,6 +141,12 @@ class _OllamaStreamingClient:
     def _cancelled(self) -> bool:
         with self._lock:
             return self._cancel_requested
+
+    def _watch_cancel(self, cancel: threading.Event, stop: threading.Event) -> None:
+        while not stop.wait(0.05):
+            if cancel.is_set():
+                self.cancel()
+                return
 
 
 class OllamaRegionVisionClient(_OllamaStreamingClient):
@@ -140,6 +170,7 @@ class OllamaRegionVisionClient(_OllamaStreamingClient):
                 }
             ],
             format_json=True,
+            cancel=cancel,
         )
         if cancel is not None and cancel.is_set():
             self.cancel()
@@ -164,6 +195,7 @@ class OllamaRegionTranslationClient(_OllamaStreamingClient):
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            cancel=cancel,
         )
         if cancel is not None and cancel.is_set():
             self.cancel()
