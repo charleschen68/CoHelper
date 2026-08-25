@@ -1003,6 +1003,7 @@ class CohelperApp(NSObject):
             ("knowledge_search", "启用知识库检索"),
             ("knowledge_answer", "启用知识回答/总结"),
             ("overlay", "启用左侧输出浮层与本机输出接口"),
+            ("region_translation", "启用屏幕区域翻译（本机 OCR + 翻译）"),
         ):
             y = self._advanced_switch(document, y, key, title, self.config.enabled(key))
         y = self._advanced_switch(document, y, "allow_external_api", "允许外部 API（默认关闭）", bool(self.config.section("privacy")["allow_external_api"]))
@@ -1304,8 +1305,8 @@ class CohelperApp(NSObject):
                     candidate.section("privacy")["allow_external_api"] = control.state() == 1
                 elif key == "automation.scan_interval_seconds":
                     continue
-                elif key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output", "voice_direct_actions", "process_plain_text_only"}:
-                    target = "features" if key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output", "voice_direct_actions"} else "clipboard"
+                elif key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "region_translation", "voice_input", "voice_output", "voice_direct_actions", "process_plain_text_only"}:
+                    target = "features" if key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "region_translation", "voice_input", "voice_output", "voice_direct_actions"} else "clipboard"
                     candidate.section(target)[key] = control.state() == 1
                 elif key in {"qmd.no_rerank", "telegram.enabled"}:
                     section_name, field = key.split(".")
@@ -1364,6 +1365,7 @@ class CohelperApp(NSObject):
         previous_voice_enabled = self.config.enabled("voice_input")
         previous_voice_output_enabled = self.config.enabled("voice_output")
         previous_voice_direct_enabled = self.config.enabled("voice_direct_actions")
+        previous_region_translation_enabled = self.config.enabled("region_translation")
         self.config = candidate
         config_generation = self.coordinator.update_config(candidate)
         self.output_generation = max(self.output_generation, config_generation)
@@ -1375,6 +1377,12 @@ class CohelperApp(NSObject):
             self._start_voice_feature()
         elif previous_voice_enabled and not candidate.enabled("voice_input"):
             self._stop_voice_feature()
+        if candidate.enabled("region_translation") and not previous_region_translation_enabled:
+            self._start_region_translation_feature()
+        elif previous_region_translation_enabled and not candidate.enabled("region_translation"):
+            self._stop_region_translation_feature()
+        if self.region_translation_menu_item is not None:
+            self.region_translation_menu_item.setEnabled_(candidate.enabled("region_translation"))
         if candidate.enabled("voice_output") and not previous_voice_output_enabled:
             self._start_speech_feature()
         elif previous_voice_output_enabled and not candidate.enabled("voice_output"):
