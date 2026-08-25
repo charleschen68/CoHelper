@@ -8,11 +8,15 @@ import pytest
 from PIL import Image
 
 from ai_drive.region_translation_transport import (
+    build_region_translation_clients,
     OllamaRegionTranslationClient,
     OllamaRegionVisionClient,
     RegionTransportError,
+    RegionTransportQueueTimeout,
     MAX_VISION_LONG_EDGE,
 )
+from cohelper_core import Config
+from ai_drive.model_scheduler import ModelScheduler
 
 
 class FakeResponse:
@@ -114,6 +118,23 @@ def test_translation_client_aggregates_stream_without_image():
     assert "images" not in kwargs["json"]["messages"][0]
 
 
+def test_configured_region_endpoints_and_timeouts_build_the_clients():
+    config = Config(
+        {
+            "region_translation": {
+                "ocr_base_url": "http://localhost:11435",
+                "translation_base_url": "https://127.0.0.1:11436",
+            }
+        }
+    )
+    vision, translation = build_region_translation_clients(config, scheduler=ModelScheduler())
+
+    assert vision.endpoint == "http://localhost:11435"
+    assert translation.endpoint == "https://127.0.0.1:11436"
+    assert vision._timeout == 60
+    assert translation._timeout == 60
+
+
 def test_vision_payload_downscales_oversized_image_before_base64_encoding():
     output = BytesIO()
     Image.new("RGB", (MAX_VISION_LONG_EDGE + 1000, 100), "white").save(output, format="PNG")
@@ -147,6 +168,20 @@ def test_transport_rejects_stream_without_done_marker():
 
     with pytest.raises(RegionTransportError, match="done"):
         client.complete("translategemma:4b", "system", "user")
+
+
+def test_transport_classifies_shared_model_queue_timeout():
+    scheduler = ModelScheduler()
+    held = scheduler.acquire("http://127.0.0.1:11434", "translategemma:4b")
+    client = OllamaRegionTranslationClient(
+        scheduler=scheduler,
+        queue_timeout=0.02,
+        session=FakeSession(FakeResponse([])),
+    )
+
+    with pytest.raises(RegionTransportQueueTimeout):
+        client.complete("translategemma:4b", "system", "user")
+    held.release()
 
 
 def test_transport_rejects_ollama_error_rows():

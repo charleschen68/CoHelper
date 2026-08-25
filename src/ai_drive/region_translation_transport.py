@@ -11,6 +11,12 @@ from urllib.parse import urlparse
 from PIL import Image
 import requests
 
+from ai_drive.model_scheduler import (
+    DEFAULT_MODEL_SCHEDULER,
+    ModelQueueCancelled,
+    ModelQueueTimeout,
+    ModelScheduler,
+)
 
 MAX_VISION_LONG_EDGE = 3072
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -24,16 +30,31 @@ class RegionTransportCancelled(RegionTransportError):
     """The active response was closed by an explicit cancellation."""
 
 
+class RegionTransportQueueTimeout(RegionTransportError):
+    """The request could not obtain the shared local-model lease in time."""
+
+
 class _OllamaStreamingClient:
-    def __init__(self, base_url: str = "http://127.0.0.1:11434", timeout: int = 60, session=requests):
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:11434",
+        timeout: int = 60,
+        session=requests,
+        scheduler: ModelScheduler = DEFAULT_MODEL_SCHEDULER,
+        queue_timeout: int = 30,
+    ):
         host = urlparse(base_url).hostname
         parsed = urlparse(base_url)
         if parsed.scheme not in {"http", "https"} or host not in _LOOPBACK_HOSTS:
             raise ValueError("region translation endpoint must be local")
         if timeout <= 0:
             raise ValueError("region translation timeout must be positive")
+        if queue_timeout <= 0:
+            raise ValueError("region translation queue timeout must be positive")
         self.endpoint = base_url.rstrip("/")
         self._timeout = timeout
+        self._scheduler = scheduler
+        self._queue_timeout = queue_timeout
         self._session = session
         self._lock = threading.RLock()
         self._response = None
@@ -81,6 +102,7 @@ class _OllamaStreamingClient:
         if format_json:
             payload["format"] = "json"
         response = None
+        lease = None
         watcher_stop = threading.Event()
         watcher = None
         if cancel is not None:
@@ -92,6 +114,19 @@ class _OllamaStreamingClient:
             )
             watcher.start()
         try:
+            try:
+                lease = self._scheduler.acquire(
+                    self.endpoint,
+                    model,
+                    priority=0,
+                    timeout=self._queue_timeout,
+                    cancel=cancel,
+                    cancel_check=self._cancelled,
+                )
+            except ModelQueueCancelled as exc:
+                raise RegionTransportCancelled("model request was cancelled") from exc
+            except ModelQueueTimeout as exc:
+                raise RegionTransportQueueTimeout("local model queue timed out") from exc
             response = self._session.post(
                 f"{self.endpoint}/api/chat",
                 json=payload,
@@ -143,6 +178,8 @@ class _OllamaStreamingClient:
                 watcher.join(timeout=1)
             if response is not None:
                 response.close()
+            if lease is not None:
+                lease.release()
             with self._lock:
                 if response is not None and self._response is response:
                     self._response = None
@@ -216,12 +253,33 @@ class OllamaRegionTranslationClient(_OllamaStreamingClient):
 
 
 __all__ = [
+    "build_region_translation_clients",
     "OllamaRegionTranslationClient",
     "OllamaRegionVisionClient",
     "MAX_VISION_LONG_EDGE",
     "RegionTransportCancelled",
     "RegionTransportError",
+    "RegionTransportQueueTimeout",
 ]
+
+
+def build_region_translation_clients(config, *, scheduler: ModelScheduler = DEFAULT_MODEL_SCHEDULER):
+    """Build configured local clients without allowing model/endpoint drift."""
+    section = config.section("region_translation") if hasattr(config, "section") else config
+    queue_timeout = int(section["queue_timeout_seconds"])
+    vision = OllamaRegionVisionClient(
+        base_url=str(section["ocr_base_url"]),
+        timeout=int(section["ocr_timeout_seconds"]),
+        scheduler=scheduler,
+        queue_timeout=queue_timeout,
+    )
+    translation = OllamaRegionTranslationClient(
+        base_url=str(section["translation_base_url"]),
+        timeout=int(section["translation_timeout_seconds"]),
+        scheduler=scheduler,
+        queue_timeout=queue_timeout,
+    )
+    return vision, translation
 
 
 def _bounded_image_bytes(image: bytes) -> bytes:

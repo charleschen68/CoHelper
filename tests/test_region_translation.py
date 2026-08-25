@@ -19,9 +19,11 @@ from ai_drive.region_translation import (
     TranslationTarget,
     VisionModelTimeoutError,
     VisionModelUnavailableError,
+    build_region_translation_coordinator,
     default_target_for,
 )
 from ai_drive.vision import Screenshot
+from cohelper_core import Config
 
 
 def screenshot() -> Screenshot:
@@ -36,6 +38,24 @@ def screenshot() -> Screenshot:
         frontmost_bundle_id="com.apple.Safari",
         origin_x=1512,
     )
+
+
+def test_configured_region_pipeline_factory_uses_independent_local_settings():
+    config = Config(
+        {
+            "features": {"region_translation": True},
+            "region_translation": {
+                "ocr_base_url": "http://127.0.0.1:11435",
+                "translation_base_url": "http://localhost:11436",
+            },
+        }
+    )
+
+    coordinator = build_region_translation_coordinator(config)
+    try:
+        assert coordinator.snapshot.state is RegionTranslationState.IDLE
+    finally:
+        coordinator.close()
 
 
 class RecordingTextVisionClient:

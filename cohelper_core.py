@@ -23,6 +23,11 @@ import yaml
 
 from apps.clipboard_helper.service import route_clipboard_text
 from ai_drive.voice.router import VoiceCommandRouter, VoiceCommandRouterError
+from ai_drive.model_scheduler import (
+    DEFAULT_MODEL_SCHEDULER,
+    ModelQueueCancelled,
+    ModelQueueTimeout,
+)
 from cohelper_setup import EnvironmentDoctor, KeychainStore, resolve_command
 
 
@@ -404,16 +409,6 @@ class OpenAICompatibleProvider(ModelProvider):
 
 
 PROVIDERS = {"ollama": OllamaProvider, "openai-compatible": OpenAICompatibleProvider}
-_MODEL_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}
-_MODEL_LOCKS_GUARD = threading.Lock()
-
-
-def _model_lock(provider: str, base_url: str, model: str) -> threading.Lock:
-    key = (provider, base_url, model)
-    with _MODEL_LOCKS_GUARD:
-        return _MODEL_LOCKS.setdefault(key, threading.Lock())
-
-
 def make_provider(name: str) -> ModelProvider:
     try:
         return PROVIDERS[name]()
@@ -442,37 +437,47 @@ class ModelService:
         if self.kind == "summary" and not self.config.enabled("knowledge_answer"):
             return ModelResult(provider="disabled")
         started = time.monotonic()
+        lease = None
         try:
-            lock = _model_lock(str(self.section["provider"]), str(self.section["base_url"]), str(self.section["model"]))
-            while not lock.acquire(timeout=0.1):
-                if cancel and cancel.is_set():
-                    return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
-            if cancel and cancel.is_set():
-                lock.release()
-                return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
+            lease = DEFAULT_MODEL_SCHEDULER.acquire(
+                str(self.section["base_url"]),
+                str(self.section["model"]),
+                priority=10,
+                timeout=30,
+                cancel=cancel,
+            )
             api_key = None
             try:
                 if self.section["provider"] == "openai-compatible":
                     api_key = KeychainStore().get(str(self.section.get("credential_account", self.kind)))
                 text = self.provider.complete(system, prompt, model=self.section["model"], base_url=self.section["base_url"], timeout=int(self.section["timeout_seconds"]), api_key=api_key)
             finally:
-                lock.release()
+                lease.release()
+                lease = None
             return ModelResult(text=text, provider=self.section["provider"], elapsed_seconds=time.monotonic() - started)
+        except ModelQueueCancelled:
+            return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
+        except ModelQueueTimeout:
+            return ModelResult(error="本地模型排队超时", provider="busy", elapsed_seconds=time.monotonic() - started)
         except Exception as exc:  # boundary: provider errors become user-visible results
             return ModelResult(error=f"{type(exc).__name__}: {exc}", provider=self.section["provider"], elapsed_seconds=time.monotonic() - started)
+        finally:
+            if lease is not None:
+                lease.release()
 
     def stream(self, prompt: str, system: str, cancel: threading.Event | None, on_delta: Callable[[str], None]) -> ModelResult:
         if self.kind == "summary" and not self.config.enabled("knowledge_answer"):
             return ModelResult(provider="disabled")
         started = time.monotonic()
+        lease = None
         try:
-            lock = _model_lock(str(self.section["provider"]), str(self.section["base_url"]), str(self.section["model"]))
-            while not lock.acquire(timeout=0.1):
-                if cancel and cancel.is_set():
-                    return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
-            if cancel and cancel.is_set():
-                lock.release()
-                return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
+            lease = DEFAULT_MODEL_SCHEDULER.acquire(
+                str(self.section["base_url"]),
+                str(self.section["model"]),
+                priority=10,
+                timeout=30,
+                cancel=cancel,
+            )
             api_key = None
             text_parts = []
             try:
@@ -492,10 +497,18 @@ class ModelService:
                     text_parts.append(delta)
                     on_delta(delta)
             finally:
-                lock.release()
+                lease.release()
+                lease = None
             return ModelResult(text="".join(text_parts), provider=self.section["provider"], elapsed_seconds=time.monotonic() - started)
+        except ModelQueueCancelled:
+            return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
+        except ModelQueueTimeout:
+            return ModelResult(error="本地模型排队超时", provider="busy", elapsed_seconds=time.monotonic() - started)
         except Exception as exc:
             return ModelResult(error=f"{type(exc).__name__}: {exc}", provider=self.section["provider"], elapsed_seconds=time.monotonic() - started)
+        finally:
+            if lease is not None:
+                lease.release()
 
 
 @dataclass

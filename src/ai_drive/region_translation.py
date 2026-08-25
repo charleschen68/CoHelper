@@ -16,6 +16,11 @@ from urllib.parse import urlparse
 import requests
 
 from ai_drive.vision import Screenshot
+from ai_drive.model_scheduler import DEFAULT_MODEL_SCHEDULER, ModelScheduler
+from ai_drive.region_translation_transport import (
+    RegionTransportQueueTimeout,
+    build_region_translation_clients,
+)
 
 
 VISION_MODEL = "qwen2.5vl:7b"
@@ -65,11 +70,19 @@ class VisionModelUnavailableError(TextExtractionError):
     pass
 
 
+class VisionModelBusyError(TextExtractionError):
+    pass
+
+
 class TranslationModelTimeoutError(RegionTranslationError):
     pass
 
 
 class TranslationModelUnavailableError(RegionTranslationError):
+    pass
+
+
+class TranslationModelBusyError(RegionTranslationError):
     pass
 
 
@@ -153,6 +166,7 @@ class RegionTranslationFailure(str, Enum):
     INVALID_TRANSLATION_RESPONSE = "invalid_translation_response"
     TRANSLATION_TIMEOUT = "translation_timeout"
     TRANSLATION_UNAVAILABLE = "translation_unavailable"
+    LOCAL_MODEL_BUSY = "local_model_busy"
     INTERNAL = "internal"
 
 
@@ -234,6 +248,9 @@ class ScreenshotTextExtractor:
         except (TimeoutError, requests.Timeout) as exc:
             self._raise_if_cancelled(cancel)
             raise VisionModelTimeoutError("vision model timed out") from exc
+        except RegionTransportQueueTimeout as exc:
+            self._raise_if_cancelled(cancel)
+            raise VisionModelBusyError("local vision model is busy") from exc
         except Exception as exc:
             self._raise_if_cancelled(cancel)
             raise VisionModelUnavailableError("vision model is unavailable") from exc
@@ -323,6 +340,9 @@ class RegionTranslationService:
         except (TimeoutError, requests.Timeout) as exc:
             self._raise_if_cancelled(cancel)
             raise TranslationModelTimeoutError("translation model timed out") from exc
+        except RegionTransportQueueTimeout as exc:
+            self._raise_if_cancelled(cancel)
+            raise TranslationModelBusyError("local translation model is busy") from exc
         except Exception as exc:
             self._raise_if_cancelled(cancel)
             raise TranslationModelUnavailableError(
@@ -581,6 +601,14 @@ class RegionTranslationCoordinator:
                 cancel,
             )
             return
+        except VisionModelBusyError:
+            self._fail(
+                generation,
+                screenshot,
+                RegionTranslationFailure.LOCAL_MODEL_BUSY,
+                cancel,
+            )
+            return
         except TextExtractionError:
             self._fail(
                 generation,
@@ -655,6 +683,16 @@ class RegionTranslationCoordinator:
                 generation,
                 screenshot,
                 RegionTranslationFailure.TRANSLATION_TIMEOUT,
+                cancel,
+                source=source,
+                target=target,
+            )
+            return
+        except TranslationModelBusyError:
+            self._fail(
+                generation,
+                screenshot,
+                RegionTranslationFailure.LOCAL_MODEL_BUSY,
                 cancel,
                 source=source,
                 target=target,
@@ -780,6 +818,24 @@ class RegionTranslationCoordinator:
         )
 
 
+def build_region_translation_coordinator(
+    config,
+    on_change: Callable[[RegionTranslationSnapshot], None] | None = None,
+    *,
+    scheduler: ModelScheduler = DEFAULT_MODEL_SCHEDULER,
+) -> RegionTranslationCoordinator:
+    """Construct the enabled pipeline from its independent local config."""
+    if not config.enabled("region_translation"):
+        raise RuntimeError("region translation feature is disabled")
+    section = config.section("region_translation")
+    vision, translation = build_region_translation_clients(config, scheduler=scheduler)
+    return RegionTranslationCoordinator(
+        ScreenshotTextExtractor(vision, model=str(section["ocr_model"])),
+        RegionTranslationService(translation, model=str(section["translation_model"])),
+        on_change=on_change,
+    )
+
+
 __all__ = [
     "ExtractedText",
     "MAX_RECOGNIZED_CHARACTERS",
@@ -792,5 +848,8 @@ __all__ = [
     "ScreenshotTextExtractor",
     "TextExtractionError",
     "TranslationTarget",
+    "TranslationModelBusyError",
+    "VisionModelBusyError",
+    "build_region_translation_coordinator",
     "default_target_for",
 ]
