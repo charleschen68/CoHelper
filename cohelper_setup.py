@@ -250,7 +250,7 @@ class EnvironmentDoctor:
         if knowledge_answer and self._section("summary").get("provider") == "ollama":
             section = self._section("summary")
             required.setdefault(str(section.get("base_url", "http://127.0.0.1:11434")), set()).add(str(section["model"]))
-        if self._section("telegram").get("enabled"):
+        if features.get("region_translation") or self._section("telegram").get("enabled"):
             section = self._section("vision")
             required.setdefault(str(section.get("base_url", "http://127.0.0.1:11434")), set()).add(str(section["model"]))
         return required

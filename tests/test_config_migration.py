@@ -13,6 +13,7 @@ def test_legacy_summary_flag_migrates_to_answer_flag():
 def test_ai_drive_defaults_are_local_and_safely_allowlisted():
     config = Config({})
 
+    assert config.section("features")["region_translation"] is False
     assert config.section("vision")["model"] == "qwen2.5vl:7b"
     assert config.section("summary")["model"] == "qwen3:8b"
     assert config.section("actions")["allowed_bundle_ids"] == ["com.apple.Safari", "com.apple.TextEdit"]
