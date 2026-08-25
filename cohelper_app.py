@@ -67,6 +67,11 @@ from ai_drive.voice import (
     VoiceInputError,
     AnswerSentenceBuffer,
     MacSpeechOutput,
+    VoiceCommandRouter,
+    VoiceCommandRouterError,
+    VoiceRouteKind,
+    VoiceCommandActionBridge,
+    VoiceActionSafetyGate,
     WhisperCppWorker,
     WhisperCppWorkerConfig,
 )
@@ -109,10 +114,24 @@ class CohelperApp(NSObject):
         self.voice_vad = None
         self.voice_speech = None
         self.voice_sentence_buffer = None
+        self.direct_screen_capture = None
+        self.voice_action_bridge = None
+        self.voice_action_safety = None
+        self.pending_voice_action = None
+        try:
+            self.voice_router = VoiceCommandRouter(self.config.section("voice")["command_aliases"])
+        except VoiceCommandRouterError as exc:
+            self.startup_error = self.startup_error or f"语音命令配置无效：{exc}"
+            self.voice_router = VoiceCommandRouter({})
         self.status_item: NSStatusItem | None = None
         self.setup_installer = None
         self.setup_thread = None
         return self
+
+    def _current_overlay_mask(self):
+        if self.output_overlay is None:
+            return None
+        return self.output_overlay.current_mask()
 
     def applicationDidFinishLaunching_(self, notification):
         NSApp().setActivationPolicy_(NSApplicationActivationPolicyAccessory)
@@ -124,6 +143,8 @@ class CohelperApp(NSObject):
             self._start_voice_feature()
         if self.startup_error is None and self.config.enabled("voice_output"):
             self._start_speech_feature()
+        if self.startup_error is None and self.config.enabled("voice_direct_actions"):
+            self._start_voice_direct_action_feature()
         self._start_clipboard_timer()
         if self.startup_error:
             self._show_config_error()
@@ -241,6 +262,9 @@ class CohelperApp(NSObject):
         menu.addItemWithTitle_action_keyEquivalent_("开始语音", "startVoice:", "")
         menu.addItemWithTitle_action_keyEquivalent_("结束并提交语音", "finishVoice:", "")
         menu.addItemWithTitle_action_keyEquivalent_("取消语音", "cancelVoice:", "")
+        menu.addItemWithTitle_action_keyEquivalent_("确认语音操作", "confirmVoiceAction:", "")
+        menu.addItemWithTitle_action_keyEquivalent_("紧急停止语音操作", "emergencyStopVoiceActions:", "")
+        menu.addItemWithTitle_action_keyEquivalent_("恢复语音操作", "resumeVoiceActions:", "")
         menu.addItemWithTitle_action_keyEquivalent_("环境诊断与设置", "runDiagnostics:", "")
         menu.addItemWithTitle_action_keyEquivalent_("模型设置", "configureModels:", "")
         menu.addItemWithTitle_action_keyEquivalent_("高级配置", "configureAdvanced:", "")
@@ -338,6 +362,137 @@ class CohelperApp(NSObject):
         if voice is not None:
             voice.cancel()
 
+    def _start_voice_direct_action_feature(self):
+        if self.direct_screen_capture is not None or not self.config.enabled("voice_direct_actions"):
+            return
+        if self.output_overlay is None or self.voice_input is None:
+            self._handle_voice_error(RuntimeError("voice direct actions require active voice input and overlay"))
+            return
+        try:
+            from ai_drive.actions import AccessibilityCapability, ActionService
+            from ai_drive.macos import (
+                MacAccessibilityInspector,
+                QuartzDesktopObserver,
+                QuartzPointerController,
+                QuartzScreenCapture,
+            )
+            from ai_drive.vision import OllamaVisionClient, VisionAnalyzer
+            from ai_drive.workflow import VisualClickWorkflow
+
+            self.direct_screen_capture = QuartzScreenCapture(self._current_overlay_mask)
+            actions = self.config.section("actions")
+            action_service = ActionService(
+                MacAccessibilityInspector(),
+                QuartzDesktopObserver(),
+                QuartzPointerController(),
+                allowed_bundle_ids=frozenset(actions["allowed_bundle_ids"]),
+                allowed_capabilities=frozenset(
+                    AccessibilityCapability(*str(value).split("|"))
+                    for value in actions["allowed_capabilities"]
+                ),
+                minimum_confidence=float(actions["minimum_confidence"]),
+                screenshot_max_age=float(actions["screenshot_max_age_seconds"]),
+                confirmation_ttl=float(actions["confirmation_ttl_seconds"]),
+            )
+            vision = self.config.section("vision")
+            workflow = VisualClickWorkflow(
+                self.direct_screen_capture,
+                VisionAnalyzer(OllamaVisionClient(str(vision["base_url"]), int(vision["timeout_seconds"])), str(vision["model"])),
+                action_service,
+            )
+            self.voice_action_safety = VoiceActionSafetyGate()
+            self.voice_action_bridge = VoiceCommandActionBridge(
+                workflow,
+                self.config.section("voice")["command_instructions"],
+                safety_gate=self.voice_action_safety,
+            )
+        except Exception as exc:
+            self.direct_screen_capture = None
+            self.voice_action_bridge = None
+            self.voice_action_safety = None
+            self._handle_voice_error(exc)
+
+    def _stop_voice_direct_action_feature(self):
+        self.direct_screen_capture = None
+        self.voice_action_bridge = None
+        self.voice_action_safety = None
+        self.pending_voice_action = None
+
+    def confirmVoiceAction_(self, sender):
+        if self.voice_action_bridge is not None and self.pending_voice_action is not None:
+            pending = self.pending_voice_action
+            try:
+                self.voice_action_bridge.confirm(
+                    pending,
+                    user_id=pending.user_id,
+                    chat_id=pending.chat_id,
+                    overlay_masked=self._current_overlay_mask() is not None,
+                )
+                self.pending_voice_action = None
+                self._publish_output(
+                    OutputKind.ACTION,
+                    OutputSource.ACTIONS,
+                    "语音操作",
+                    f"已确认并执行：{pending.command}",
+                    severity=OutputSeverity.INFO,
+                )
+                return
+            except Exception as exc:
+                self.pending_voice_action = None
+                self._publish_output(
+                    OutputKind.ERROR,
+                    OutputSource.ACTIONS,
+                    "语音操作被拒绝",
+                    str(exc),
+                    severity=OutputSeverity.ERROR,
+                )
+                return
+        self._publish_output(
+            OutputKind.ERROR,
+            OutputSource.VOICE,
+            "语音操作确认",
+            "当前没有可确认的语音操作。",
+            severity=OutputSeverity.WARNING,
+        )
+
+    def emergencyStopVoiceActions_(self, sender):
+        if self.voice_action_safety is not None:
+            self.voice_action_safety.emergency_stop()
+        if self.pending_voice_action is not None and self.voice_action_bridge is not None:
+            pending = self.pending_voice_action
+            try:
+                self.voice_action_bridge.cancel(pending, user_id=pending.user_id, chat_id=pending.chat_id)
+            except Exception:
+                pass
+            self.pending_voice_action = None
+        self.output_generation += 1
+        self._publish_output(
+            OutputKind.EMERGENCY_STOP,
+            OutputSource.ACTIONS,
+            "语音操作紧急停止",
+            "所有待确认语音操作已停止；需要手动恢复。",
+            severity=OutputSeverity.CRITICAL,
+            generation=self.output_generation,
+        )
+
+    def resumeVoiceActions_(self, sender):
+        if self.voice_action_safety is None:
+            return
+        try:
+            self.voice_action_safety.resume(manual=True)
+        except Exception as exc:
+            self._handle_voice_error(exc)
+            return
+        self.output_generation += 1
+        self._publish_output(
+            OutputKind.EMERGENCY_CLEARED,
+            OutputSource.ACTIONS,
+            "语音操作安全状态",
+            "已手动恢复语音操作。",
+            severity=OutputSeverity.INFO,
+            generation=self.output_generation,
+        )
+
     def startVoice_(self, sender):
         if self.voice_input is None or self.voice_capture is None:
             self._show_error("语音输入不可用", "请先在高级配置中启用语音输入，并确认本机已安装 Whisper worker。")
@@ -411,10 +566,44 @@ class CohelperApp(NSObject):
     def _handle_voice_transcript(self, event):
         kind = OutputKind.TRANSCRIPT_FINAL if event.finalized else OutputKind.TRANSCRIPT_PARTIAL
         self._publish_output(kind, OutputSource.SYSTEM, "语音转写", event.text, generation=event.sequence)
-        if event.finalized:
-            generation = self.coordinator.submit(event.text)
-            if generation is not None:
-                self.output_generation = max(self.output_generation, generation)
+        if not event.finalized:
+            return
+        try:
+            route = self.voice_router.route(event.text, finalized=True)
+        except VoiceCommandRouterError as exc:
+            self._publish_output(
+                OutputKind.ERROR,
+                OutputSource.VOICE,
+                "语音请求已拒绝",
+                str(exc),
+                severity=OutputSeverity.WARNING,
+            )
+            return
+        if route.kind is VoiceRouteKind.COMMAND:
+            if self.voice_action_bridge is None:
+                self._publish_output(OutputKind.STATUS, OutputSource.VOICE, "语音命令已识别", "动作能力尚未启用；未执行任何操作。", severity=OutputSeverity.WARNING)
+                return
+            try:
+                self.pending_voice_action = self.voice_action_bridge.prepare(
+                    route,
+                    utterance_id=f"{event.session_id}:{event.sequence}",
+                    user_id=0,
+                    chat_id=0,
+                    overlay_masked=self._current_overlay_mask() is not None,
+                )
+                self._publish_output(
+                    OutputKind.ACTION,
+                    OutputSource.ACTIONS,
+                    "待确认语音操作",
+                    f"已准备：{self.pending_voice_action.command}；请从菜单确认。",
+                    severity=OutputSeverity.WARNING,
+                )
+            except Exception as exc:
+                self._publish_output(OutputKind.ERROR, OutputSource.ACTIONS, "语音操作准备失败", str(exc), severity=OutputSeverity.ERROR)
+            return
+        generation = self.coordinator.submit(route.text)
+        if generation is not None:
+            self.output_generation = max(self.output_generation, generation)
 
     def _handle_voice_error(self, error):
         self._publish_output(OutputKind.ERROR, OutputSource.SYSTEM, "语音输入错误", str(error), severity=OutputSeverity.ERROR)
@@ -754,6 +943,7 @@ class CohelperApp(NSObject):
             ("overlay", "启用左侧输出浮层与本机输出接口"),
             ("voice_input", "启用本地语音输入（需要 Whisper 与麦克风权限）"),
             ("voice_output", "启用本地答案朗读（macOS 系统语音）"),
+            ("voice_direct_actions", "启用受保护的语音直行动作（默认关闭）"),
         ):
             y = self._advanced_switch(document, y, key, title, self.config.enabled(key))
         y = self._advanced_switch(document, y, "allow_external_api", "允许外部 API（默认关闭）", bool(self.config.section("privacy")["allow_external_api"]))
@@ -919,8 +1109,8 @@ class CohelperApp(NSObject):
             for key, control in self.advanced_controls.items():
                 if key == "allow_external_api":
                     candidate.section("privacy")["allow_external_api"] = control.state() == 1
-                elif key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output", "process_plain_text_only"}:
-                    target = "features" if key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output"} else "clipboard"
+                elif key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output", "voice_direct_actions", "process_plain_text_only"}:
+                    target = "features" if key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output", "voice_direct_actions"} else "clipboard"
                     candidate.section(target)[key] = control.state() == 1
                 elif key in {"qmd.no_rerank", "telegram.enabled"}:
                     section_name, field = key.split(".")
@@ -972,6 +1162,8 @@ class CohelperApp(NSObject):
         previous_overlay_enabled = self.config.enabled("overlay")
         previous_voice_enabled = self.config.enabled("voice_input")
         previous_voice_output_enabled = self.config.enabled("voice_output")
+        previous_voice_direct_enabled = self.config.enabled("voice_direct_actions")
+        previous_voice_direct_enabled = self.config.enabled("voice_direct_actions")
         self.config = candidate
         config_generation = self.coordinator.update_config(candidate)
         self.output_generation = max(self.output_generation, config_generation)
@@ -987,6 +1179,12 @@ class CohelperApp(NSObject):
             self._start_speech_feature()
         elif previous_voice_output_enabled and not candidate.enabled("voice_output"):
             self._stop_speech_feature()
+        if candidate.enabled("voice_direct_actions") and not previous_voice_direct_enabled:
+            self._start_voice_direct_action_feature()
+        elif previous_voice_direct_enabled and not candidate.enabled("voice_direct_actions"):
+            self._stop_voice_direct_action_feature()
+        if candidate.enabled("voice_direct_actions") and not previous_voice_direct_enabled:
+            self._show_info("语音直行动作", "已启用配置开关；在完成权限、目标复核和紧急停止检查前不会执行动作。")
         if hasattr(self, "timer"):
             self.timer.invalidate()
             self._start_clipboard_timer()

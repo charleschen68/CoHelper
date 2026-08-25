@@ -4,7 +4,8 @@ from apps.clipboard_helper.service import (
     ClipboardKind,
     route_clipboard_text,
 )
-from cohelper_core import Config, ModelResult, TaskCallbacks, TaskCoordinator
+from cohelper_core import Config, ModelResult, ModelService, TaskCallbacks, TaskCoordinator
+from ai_drive.model_scheduler import DEFAULT_MODEL_SCHEDULER
 
 
 class FakeTranslator:
@@ -114,3 +115,36 @@ def test_config_update_cancels_inflight_task_and_new_task_uses_new_snapshot(monk
     assert seen_models == [("translation", "old")]
     assert results == []
     assert config_generation == 2
+
+
+def test_model_service_uses_shared_local_model_lease(monkeypatch):
+    import cohelper_core
+    import threading
+
+    calls = []
+
+    class FakeProvider:
+        def complete(self, system, user, **kwargs):
+            calls.append(kwargs["model"])
+            return "done"
+
+    monkeypatch.setattr(cohelper_core, "make_provider", lambda _name: FakeProvider())
+    config = Config(
+        {
+            "features": {"translation": True},
+            "translation": {"base_url": "http://127.0.0.1:19999"},
+        }
+    )
+    held = DEFAULT_MODEL_SCHEDULER.acquire("http://127.0.0.1:19999", "translategemma:4b")
+    result = []
+    worker = threading.Thread(
+        target=lambda: result.append(ModelService(config, "translation").run("text", "system"))
+    )
+    worker.start()
+    __import__("time").sleep(0.05)
+    assert calls == []
+    held.release()
+    worker.join(1)
+
+    assert result[0].text == "done"
+    assert calls == ["translategemma:4b"]

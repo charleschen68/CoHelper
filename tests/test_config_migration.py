@@ -13,7 +13,9 @@ def test_legacy_summary_flag_migrates_to_answer_flag():
 def test_ai_drive_defaults_are_local_and_safely_allowlisted():
     config = Config({})
 
+    assert config.section("features")["region_translation"] is False
     assert config.section("vision")["model"] == "qwen2.5vl:7b"
+    assert config.section("region_translation")["translation_model"] == "translategemma:4b"
     assert config.section("summary")["model"] == "qwen3:8b"
     assert config.section("actions")["allowed_bundle_ids"] == ["com.apple.Safari", "com.apple.TextEdit"]
     assert any("Reload this page" in item for item in config.section("actions")["allowed_capabilities"])
@@ -53,14 +55,59 @@ def test_vision_model_and_confirmation_ttl_are_fixed():
         Config({"actions": {"confirmation_ttl_seconds": 31}})
 
 
+def test_region_translation_models_and_endpoint_are_local_and_fixed():
+    with pytest.raises(ConfigError, match="region_translation"):
+        Config({"region_translation": {"translation_model": "other"}})
+    with pytest.raises(ConfigError, match="region_translation"):
+        Config({"region_translation": {"translation_base_url": "https://example.com"}})
+    with pytest.raises(ConfigError, match="region_translation"):
+        Config({"region_translation": {"ocr_base_url": "ftp://127.0.0.1:11434"}})
+
+
+def test_region_translation_timeouts_are_fixed_product_boundaries():
+    with pytest.raises(ConfigError, match="超时必须固定"):
+        Config({"region_translation": {"queue_timeout_seconds": 3600}})
+
+
 def test_voice_input_is_disabled_by_default_and_validates_audio_boundary():
     config = Config({})
     assert config.enabled("voice_input") is False
     assert config.enabled("voice_output") is False
+    assert config.enabled("voice_direct_actions") is False
     assert config.section("voice")["sample_rate"] == 16_000
 
     enabled = Config({"features": {"voice_input": True}})
     assert enabled.enabled("voice_input") is True
+
+
+def test_voice_command_aliases_are_validated_and_remain_unexecuted_configuration():
+    config = Config(
+        {
+            "voice": {
+                "command_aliases": {
+                    "refresh_safari": ["刷新 Safari 执行"],
+                }
+            }
+        }
+    )
+    assert config.section("voice")["command_aliases"]["refresh_safari"] == ["刷新 Safari 执行"]
+
+    with pytest.raises(ConfigError, match="必须以执行结尾"):
+        Config({"voice": {"command_aliases": {"refresh": ["刷新 Safari"]}}})
+
+
+def test_voice_direct_actions_require_voice_input_and_overlay():
+    with pytest.raises(ConfigError, match="voice_input"):
+        Config({"features": {"voice_direct_actions": True}})
+    with pytest.raises(ConfigError, match="overlay"):
+        Config({"features": {"voice_direct_actions": True, "voice_input": True, "overlay": False}})
+
+
+def test_voice_command_instructions_are_local_string_mapping():
+    config = Config({"voice": {"command_instructions": {"refresh_safari": "刷新 Safari"}}})
+    assert config.section("voice")["command_instructions"]["refresh_safari"] == "刷新 Safari"
+    with pytest.raises(ConfigError, match="command_instructions"):
+        Config({"voice": {"command_instructions": {"refresh_safari": 1}}})
 
 
 def test_voice_input_rejects_non_16khz_mono_configuration():

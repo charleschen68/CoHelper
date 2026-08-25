@@ -127,6 +127,178 @@
   interruption while a new recording starts. The streaming/cancellation path
   is covered by tests but has not yet had live GUI acceptance.
 
+## 2026-08-24 — Phase 4 deterministic voice routing started
+
+### Implemented so far
+
+- Added a pure finalized-transcript router with three explicit outcomes:
+  pending for partial speech, knowledge for ordinary questions, and command
+  for exact registered phrases.
+- Restricted registered command phrases to explicit endings in “执行”, rejected
+  duplicate aliases, and rejected unregistered or mixed command/knowledge
+  requests. The router has no action-execution capability.
+- Added `voice.command_aliases` as a validated local configuration boundary;
+  finalized commands are recognized and displayed, but still cannot invoke a
+  native action.
+
+### Verified so far
+
+- Focused router/config tests: 5 passed.
+- Full repository regression after route integration: 188 passed.
+- The unprivileged full-suite run reached 183 passed; four Unix-socket tests
+  were blocked by the sandbox's AF_UNIX bind restriction and require the local
+  socket test context below.
+
+### Remaining Phase 4 work
+
+- Connect recognized commands to the existing guarded action-preparation and
+  confirmation boundary. No native action should be invoked by the parser
+  itself.
+- Add end-to-end tests proving partial, finalized knowledge, unregistered
+  command, and mixed-request paths remain separate.
+
+## 2026-08-24 — Phase 5 guarded direct-action boundary started
+
+### Implemented so far
+
+- Added a pure fresh-target store for the future “点它，执行” path. Only one
+  `voice_direct` target detected within three seconds can produce an intent.
+- Bound the intent to an utterance ID and made target consumption one-time;
+  replacement, expiry, invalid identity, and ambiguity are rejected.
+- Added `features.voice_direct_actions` with a safe default of `false`; a
+  disabled store does not retain or consume target context.
+- The store has no Quartz, Accessibility, shell, or other action capability.
+
+### Verified so far
+
+- Focused direct-action/config tests: 6 passed.
+- Full repository regression after the feature gate: 193 passed.
+
+### Remaining Phase 5 work
+
+- Ingest sanitized detection target context from the automation/output boundary.
+- Re-capture and revalidate through `ActionService` before any future click;
+  add overlay masking, emergency-stop gating, and live macOS acceptance.
+
+## 2026-08-24 — Phase 5 guarded prepare-confirm bridge started
+
+### Implemented so far
+
+- Added a command bridge that maps only routed command IDs to explicit action
+  instructions and calls the existing guarded workflow's `prepare` method.
+- Confirmation remains a separate explicit call; one utterance can hold only
+  one pending action, and knowledge routes or missing instructions are rejected.
+- Pending actions now retain the originating user/chat identity and reject
+  confirmation or cancellation from another identity before calling the
+  guarded workflow.
+- Added a fail-closed safety gate requiring an overlay-masked action screenshot
+  and manual resume after emergency stop before prepare can proceed.
+
+### Verified so far
+
+- Focused action/safety tests: 6 passed.
+
+### Remaining
+
+- Connect the bridge to the app's action service with real masked capture,
+  fresh screenshot revalidation, and the durable application emergency state.
+
+## 2026-08-24 — Phase 5 screenshot masking seam started
+
+### Implemented so far
+
+- Added a platform-independent overlay masking adapter that maps the display's
+  bottom-left logical coordinates to screenshot pixels, clips at display
+  bounds, and preserves desktop/capture metadata for later `ActionService`
+  validation.
+
+### Verified so far
+
+- Focused screenshot masking tests: 2 passed.
+
+### Remaining
+
+- Supply the real overlay frame to `QuartzScreenCapture`, then wire masked
+  captures through prepare, re-capture, and confirm paths.
+
+## 2026-08-24 — Phase 5 Quartz capture mask injection started
+
+### Implemented so far
+
+- `QuartzScreenCapture` now accepts an overlay-mask provider and applies the
+  mask immediately after capture, with an explicit seam for re-masking an
+  already captured screenshot before confirmation.
+
+### Verified so far
+
+- Focused Quartz capture-mask test: 1 passed.
+
+### Remaining
+
+- Provide the actual live overlay frame from the app, and use the masked
+  capture in every visual prepare/re-capture/confirm path.
+
+## 2026-08-24 — Phase 5 live overlay mask provider started
+
+### Implemented so far
+
+- The AppKit overlay controller now exposes its visible panel frame as an
+  `OverlayMask`; hidden or closed panels return no mask.
+- `CohelperApp` exposes the current overlay provider seam for future action
+  capture construction.
+
+### Verified so far
+
+- Focused overlay-provider test: 1 passed.
+
+### Remaining
+
+- Pass this provider into the app-owned `QuartzScreenCapture` and use masked
+  screenshots across visual prepare, re-capture, and confirm.
+
+## 2026-08-24 — Phase 5 app-owned masked capture wiring started
+
+### Implemented so far
+
+- `voice_direct_actions` now requires both voice input and the overlay feature
+  at config validation time.
+- When enabled, CoHelperApp creates an app-owned `QuartzScreenCapture` with
+  the live overlay mask provider; when disabled, no capture adapter is created.
+
+### Verified so far
+
+- Focused configuration dependency tests: 2 passed.
+
+### Remaining
+
+- Inject this capture into the guarded visual workflow and ensure prepare,
+  inference re-capture, and confirm all use masked screenshots.
+
+## 2026-08-24 — Phase 5 app-owned guarded workflow started
+
+### Implemented so far
+
+- When direct actions are enabled, CoHelperApp now constructs the local vision
+  analyzer, masked `QuartzScreenCapture`, `ActionService`, and
+  `VisualClickWorkflow` behind the feature gate.
+- `voice.command_instructions` maps registered command IDs to explicit action
+  instructions. Final command handling only prepares a pending action; no
+  automatic confirmation or click is wired.
+- A prepared action is retained for an explicit menu confirmation; the confirm
+  path calls the existing guarded workflow and reports success/failure.
+- Added independent menu emergency-stop and manual-resume handlers; emergency
+  state blocks both prepare and confirm, and cancels the pending action.
+
+### Verified so far
+
+- Focused workflow/safety tests: 4 passed.
+
+### Remaining
+
+- Validate the live screen again through `ActionService.confirm` in a real
+  enabled-app acceptance run, including changed-target and emergency-stop
+  rejection.
+
 ### Remaining Phase 2 work
 
 - The menu controls, global/local `Option-Space` press/release handling, and

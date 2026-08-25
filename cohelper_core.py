@@ -22,6 +22,12 @@ import requests
 import yaml
 
 from apps.clipboard_helper.service import route_clipboard_text
+from ai_drive.voice.router import VoiceCommandRouter, VoiceCommandRouterError
+from ai_drive.model_scheduler import (
+    DEFAULT_MODEL_SCHEDULER,
+    ModelQueueCancelled,
+    ModelQueueTimeout,
+)
 from cohelper_setup import EnvironmentDoctor, KeychainStore, resolve_command
 
 
@@ -38,11 +44,22 @@ DEFAULT_CONFIG = {
         "overlay": True,
         "voice_input": False,
         "voice_output": False,
+        "voice_direct_actions": False,
+        "region_translation": False,
     },
     "privacy": {"allow_external_api": False},
     "clipboard": {"min_chars": 3, "max_chars": 20000, "poll_interval_ms": 400, "debounce_ms": 500, "process_plain_text_only": True},
     "knowledge": {"collection": "jarvis-wiki", "source_path": "", "limit": 5, "query_timeout_seconds": 20, "max_summary_source_chars": 50000},
     "translation": {"provider": "ollama", "model": "translategemma:4b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 60, "credential_account": "translation"},
+    "region_translation": {
+        "ocr_model": "qwen2.5vl:7b",
+        "translation_model": "translategemma:4b",
+        "ocr_base_url": "http://127.0.0.1:11434",
+        "translation_base_url": "http://127.0.0.1:11434",
+        "ocr_timeout_seconds": 60,
+        "translation_timeout_seconds": 60,
+        "queue_timeout_seconds": 30,
+    },
     "summary": {"provider": "ollama", "model": "qwen3:8b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 120, "credential_account": "summary"},
     "qmd": {"command": "qmd", "index": "index", "no_rerank": False, "models": {"embedding": "", "reranking": "", "generation": ""}},
     "vision": {"model": "qwen2.5vl:7b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 90},
@@ -55,6 +72,8 @@ DEFAULT_CONFIG = {
         "model_path": str(APP_SUPPORT / "voice" / "models" / "ggml-large-v3-turbo-q5_0.bin"),
         "server_port": 18080,
         "language": "auto",
+        "command_aliases": {},
+        "command_instructions": {},
     },
     "actions": {
         "allowed_bundle_ids": ["com.apple.Safari", "com.apple.TextEdit"],
@@ -114,7 +133,7 @@ class Config:
         os.replace(temporary, path)
 
     def _validate(self) -> None:
-        for section_name in ("features", "privacy", "clipboard", "knowledge", "translation", "summary", "qmd", "vision", "voice", "actions", "telegram"):
+        for section_name in ("features", "privacy", "clipboard", "knowledge", "translation", "region_translation", "summary", "qmd", "vision", "voice", "actions", "telegram"):
             if not isinstance(self.values.get(section_name), dict):
                 raise ConfigError(f"{section_name} 必须是 mapping")
         clipboard = self.values["clipboard"]
@@ -142,6 +161,10 @@ class Config:
                 raise ConfigError(f"features.{feature} 必须是 boolean")
         if self.values["features"].get("knowledge_answer") and not self.values["features"].get("knowledge_search"):
             raise ConfigError("knowledge_answer 依赖 knowledge_search")
+        if self.values["features"].get("voice_direct_actions") and not self.values["features"].get("voice_input"):
+            raise ConfigError("voice_direct_actions 依赖 voice_input")
+        if self.values["features"].get("voice_direct_actions") and not self.values["features"].get("overlay"):
+            raise ConfigError("voice_direct_actions 依赖 overlay")
         for section_name in ("translation", "summary"):
             section = self.values[section_name]
             if section.get("provider") not in {"ollama", "openai-compatible"}:
@@ -164,6 +187,26 @@ class Config:
             raise ConfigError("vision.base_url 必须是本机 Ollama 地址")
         if vision.get("model") != "qwen2.5vl:7b":
             raise ConfigError("vision.model 必须是 qwen2.5vl:7b")
+        region_translation = self.values["region_translation"]
+        if region_translation.get("ocr_model") != "qwen2.5vl:7b":
+            raise ConfigError("region_translation.ocr_model 必须是 qwen2.5vl:7b")
+        if region_translation.get("translation_model") != "translategemma:4b":
+            raise ConfigError("region_translation.translation_model 必须是 translategemma:4b")
+        for key in ("ocr_base_url", "translation_base_url"):
+            endpoint = urlparse(str(region_translation.get(key, "")))
+            if endpoint.scheme not in {"http", "https"} or endpoint.hostname not in {"127.0.0.1", "localhost", "::1"}:
+                raise ConfigError(f"region_translation.{key} 必须是本机 Ollama 地址")
+        try:
+            region_timeouts = [
+                int(region_translation["ocr_timeout_seconds"]),
+                int(region_translation["translation_timeout_seconds"]),
+                int(region_translation["queue_timeout_seconds"]),
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ConfigError(f"region_translation 数值配置无效：{exc}") from exc
+        expected_timeouts = (60, 60, 30)
+        if tuple(region_timeouts) != expected_timeouts:
+            raise ConfigError("region_translation 超时必须固定为 OCR 60 秒、翻译 60 秒、排队 30 秒")
         voice = self.values["voice"]
         if voice.get("sample_rate") != 16_000 or voice.get("channels") != 1:
             raise ConfigError("voice 必须使用 16 kHz mono")
@@ -181,6 +224,29 @@ class Config:
             raise ConfigError("voice VAD 配置必须有效")
         if not 1024 <= server_port <= 65535:
             raise ConfigError("voice.server_port 必须在 1024 到 65535 之间")
+        command_aliases = voice.get("command_aliases")
+        if not isinstance(command_aliases, dict):
+            raise ConfigError("voice.command_aliases 必须是 mapping")
+        if any(not isinstance(command, str) or not command.strip() for command in command_aliases):
+            raise ConfigError("voice.command_aliases 的命令名不能为空")
+        if any(
+            not isinstance(phrases, list)
+            or not phrases
+            or not all(isinstance(phrase, str) and phrase.strip() for phrase in phrases)
+            for phrases in command_aliases.values()
+        ):
+            raise ConfigError("voice.command_aliases 的短语必须是非空字符串列表")
+        try:
+            VoiceCommandRouter(command_aliases)
+        except VoiceCommandRouterError as exc:
+            raise ConfigError(f"voice.command_aliases 无效：{exc}") from exc
+        command_instructions = voice.get("command_instructions")
+        if not isinstance(command_instructions, dict) or any(
+            not isinstance(command, str) or not command.strip()
+            or not isinstance(instruction, str) or not instruction.strip()
+            for command, instruction in command_instructions.items()
+        ):
+            raise ConfigError("voice.command_instructions 必须是非空字符串 mapping")
         allowed = self.values["actions"].get("allowed_bundle_ids")
         if not isinstance(allowed, list) or not allowed or not all(isinstance(item, str) and item for item in allowed):
             raise ConfigError("actions.allowed_bundle_ids 必须是非空字符串列表")
@@ -343,16 +409,6 @@ class OpenAICompatibleProvider(ModelProvider):
 
 
 PROVIDERS = {"ollama": OllamaProvider, "openai-compatible": OpenAICompatibleProvider}
-_MODEL_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}
-_MODEL_LOCKS_GUARD = threading.Lock()
-
-
-def _model_lock(provider: str, base_url: str, model: str) -> threading.Lock:
-    key = (provider, base_url, model)
-    with _MODEL_LOCKS_GUARD:
-        return _MODEL_LOCKS.setdefault(key, threading.Lock())
-
-
 def make_provider(name: str) -> ModelProvider:
     try:
         return PROVIDERS[name]()
@@ -381,37 +437,47 @@ class ModelService:
         if self.kind == "summary" and not self.config.enabled("knowledge_answer"):
             return ModelResult(provider="disabled")
         started = time.monotonic()
+        lease = None
         try:
-            lock = _model_lock(str(self.section["provider"]), str(self.section["base_url"]), str(self.section["model"]))
-            while not lock.acquire(timeout=0.1):
-                if cancel and cancel.is_set():
-                    return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
-            if cancel and cancel.is_set():
-                lock.release()
-                return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
+            lease = DEFAULT_MODEL_SCHEDULER.acquire(
+                str(self.section["base_url"]),
+                str(self.section["model"]),
+                priority=10,
+                timeout=30,
+                cancel=cancel,
+            )
             api_key = None
             try:
                 if self.section["provider"] == "openai-compatible":
                     api_key = KeychainStore().get(str(self.section.get("credential_account", self.kind)))
                 text = self.provider.complete(system, prompt, model=self.section["model"], base_url=self.section["base_url"], timeout=int(self.section["timeout_seconds"]), api_key=api_key)
             finally:
-                lock.release()
+                lease.release()
+                lease = None
             return ModelResult(text=text, provider=self.section["provider"], elapsed_seconds=time.monotonic() - started)
+        except ModelQueueCancelled:
+            return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
+        except ModelQueueTimeout:
+            return ModelResult(error="本地模型排队超时", provider="busy", elapsed_seconds=time.monotonic() - started)
         except Exception as exc:  # boundary: provider errors become user-visible results
             return ModelResult(error=f"{type(exc).__name__}: {exc}", provider=self.section["provider"], elapsed_seconds=time.monotonic() - started)
+        finally:
+            if lease is not None:
+                lease.release()
 
     def stream(self, prompt: str, system: str, cancel: threading.Event | None, on_delta: Callable[[str], None]) -> ModelResult:
         if self.kind == "summary" and not self.config.enabled("knowledge_answer"):
             return ModelResult(provider="disabled")
         started = time.monotonic()
+        lease = None
         try:
-            lock = _model_lock(str(self.section["provider"]), str(self.section["base_url"]), str(self.section["model"]))
-            while not lock.acquire(timeout=0.1):
-                if cancel and cancel.is_set():
-                    return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
-            if cancel and cancel.is_set():
-                lock.release()
-                return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
+            lease = DEFAULT_MODEL_SCHEDULER.acquire(
+                str(self.section["base_url"]),
+                str(self.section["model"]),
+                priority=10,
+                timeout=30,
+                cancel=cancel,
+            )
             api_key = None
             text_parts = []
             try:
@@ -431,10 +497,18 @@ class ModelService:
                     text_parts.append(delta)
                     on_delta(delta)
             finally:
-                lock.release()
+                lease.release()
+                lease = None
             return ModelResult(text="".join(text_parts), provider=self.section["provider"], elapsed_seconds=time.monotonic() - started)
+        except ModelQueueCancelled:
+            return ModelResult(error="请求已取消", provider="cancelled", elapsed_seconds=time.monotonic() - started)
+        except ModelQueueTimeout:
+            return ModelResult(error="本地模型排队超时", provider="busy", elapsed_seconds=time.monotonic() - started)
         except Exception as exc:
             return ModelResult(error=f"{type(exc).__name__}: {exc}", provider=self.section["provider"], elapsed_seconds=time.monotonic() - started)
+        finally:
+            if lease is not None:
+                lease.release()
 
 
 @dataclass

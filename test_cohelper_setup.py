@@ -40,6 +40,20 @@ def test_required_models_respect_disabled_features():
     assert EnvironmentDoctor(config).required_ollama_models() == {"summary-model"}
 
 
+def test_region_translation_model_diagnostics_are_feature_gated():
+    config = {
+        "features": {"region_translation": True},
+        "region_translation": {
+            "ocr_model": "qwen2.5vl:7b",
+            "ocr_base_url": "http://127.0.0.1:11434",
+            "translation_model": "translategemma:4b",
+            "translation_base_url": "http://127.0.0.1:11434",
+        },
+    }
+
+    assert EnvironmentDoctor(config).required_ollama_models() == {"qwen2.5vl:7b", "translategemma:4b"}
+
+
 def test_disabled_knowledge_search_does_not_check_qmd(monkeypatch):
     doctor = EnvironmentDoctor(
         {
