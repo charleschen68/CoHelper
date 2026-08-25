@@ -9,22 +9,30 @@
   text, and translated text, with target selection, copy, and retry controls.
 - Added a configuration-center switch for `features.region_translation`; saving
   the switch starts or stops the runtime and updates the status-bar item.
+- Added a permission-free global `Option-Shift-T` registration that starts the
+  same explicit selection flow as the status-bar item, and displays the
+  shortcut in the native menu. The existing voice gesture is displayed as
+  `Option-Space`; unsafe and low-frequency actions remain unbound.
 - Kept OCR and translation on loopback Ollama using `qwen2.5vl:7b` and
   `translategemma:4b`, with shared local-model scheduling.
 
 ### Verified
 
-- Full regression suite: 300 passed.
+- Full regression suite: 312 passed.
 - Screen Recording permission is currently available on this Mac.
 - A real local Ollama probe completed OCR (`Hello world`) and translation
   (`你好，世界`) with final state `ready`.
+- Live repeated-selection acceptance completed after fixing generation
+  isolation between overlapping capture workers.
+- A real Carbon registration probe registered and unregistered
+  `Option-Shift-T` without requesting Accessibility permission.
 
 ### Pending acceptance
 
-- The feature flag remains disabled in the user's config by default.
-- Real AppKit acceptance still requires enabling the switch, explicitly
-  triggering the status-bar action, dragging a region, and checking the panel
-  in front of the selected display.
+- The feature remains disabled by default for new configurations.
+- Live acceptance still needs one physical `Option-Shift-T` press while another
+  application is frontmost, followed by a region selection and visible result
+  panel.
 
 ## 2026-08-22 — Voice and overlay phase 1
 
