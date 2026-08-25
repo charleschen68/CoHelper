@@ -2,13 +2,16 @@ import base64
 import json
 import threading
 import time
+from io import BytesIO
 
 import pytest
+from PIL import Image
 
 from ai_drive.region_translation_transport import (
     OllamaRegionTranslationClient,
     OllamaRegionVisionClient,
     RegionTransportError,
+    MAX_VISION_LONG_EDGE,
 )
 
 
@@ -48,6 +51,19 @@ class FakeSession:
         return self.response
 
 
+class BlockingPostSession(FakeSession):
+    def __init__(self, response):
+        super().__init__(response)
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def post(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        self.started.set()
+        assert self.release.wait(1)
+        return self.response
+
+
 def row(content, done=False):
     return json.dumps({"message": {"content": content}, "done": done})
 
@@ -82,6 +98,18 @@ def test_translation_client_aggregates_stream_without_image():
     assert "images" not in kwargs["json"]["messages"][0]
 
 
+def test_vision_payload_downscales_oversized_image_before_base64_encoding():
+    output = BytesIO()
+    Image.new("RGB", (MAX_VISION_LONG_EDGE + 1000, 100), "white").save(output, format="PNG")
+    response = FakeResponse([row("{}", True)])
+    session = FakeSession(response)
+    OllamaRegionVisionClient(session=session).analyze("qwen2.5vl:7b", output.getvalue(), "read text")
+
+    encoded = session.calls[0][1]["json"]["messages"][0]["images"][0]
+    with Image.open(BytesIO(base64.b64decode(encoded))) as bounded:
+        assert max(bounded.size) <= MAX_VISION_LONG_EDGE
+
+
 @pytest.mark.parametrize("client", [OllamaRegionVisionClient, OllamaRegionTranslationClient])
 def test_transport_rejects_non_loopback_endpoint(client):
     with pytest.raises(ValueError, match="local"):
@@ -93,6 +121,14 @@ def test_transport_rejects_malformed_stream_rows():
     client = OllamaRegionTranslationClient(session=FakeSession(response))
 
     with pytest.raises(RegionTransportError, match="JSON"):
+        client.complete("translategemma:4b", "system", "user")
+
+
+def test_transport_rejects_stream_without_done_marker():
+    response = FakeResponse([row("partial")])
+    client = OllamaRegionTranslationClient(session=FakeSession(response))
+
+    with pytest.raises(RegionTransportError, match="done"):
         client.complete("translategemma:4b", "system", "user")
 
 
@@ -112,13 +148,35 @@ def test_cancel_closes_active_response_and_unblocks_request():
     worker = threading.Thread(target=run)
     worker.start()
     assert response.started.wait(1)
-    assert client.cancel() is True
+    assert client.cancel() is False
     worker.join(1)
 
     assert not worker.is_alive()
     assert response.closed is True
     assert len(errors) == 1
     assert isinstance(errors[0], RegionTransportError)
+
+
+def test_cancel_reports_stopping_while_session_post_is_blocked():
+    response = FakeResponse([row("partial"), row("", True)])
+    session = BlockingPostSession(response)
+    client = OllamaRegionTranslationClient(session=session)
+    errors = []
+
+    worker = threading.Thread(
+        target=lambda: _capture_error(
+            errors,
+            lambda: client.complete("translategemma:4b", "system", "user"),
+        )
+    )
+    worker.start()
+    assert session.started.wait(1)
+    assert client.cancel() is False
+    session.release.set()
+    worker.join(1)
+
+    assert not worker.is_alive()
+    assert len(errors) == 1
 
 
 def test_cancel_is_idempotent_when_no_request_is_active():
@@ -142,7 +200,7 @@ def test_transport_can_be_reused_after_cancelled_request_finishes():
     )
     worker.start()
     assert first.started.wait(1)
-    client.cancel()
+    assert client.cancel() is False
     worker.join(1)
     assert not worker.is_alive()
 

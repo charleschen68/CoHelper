@@ -47,10 +47,10 @@ def test_drag_is_normalized_to_display_local_logical_rect():
 
 @pytest.mark.parametrize(
     "start, end",
-    [((100, 50), (219, 130)), ((100, 50), (220, 129)), ((600, 450), (600, 450))],
+    [((100, 50), (219, 130)), ((100, 50), (220, 129)), ((600, 450), (600, 450)), ((float("nan"), 50), (220, 130))],
 )
 def test_drag_rejects_too_small_or_zero_selection(start, end):
-    with pytest.raises(RegionSelectionError, match="120"):
+    with pytest.raises(RegionSelectionError, match="selection"):
         RegionSelection.from_drag(7, (100, 50), (600, 400), start, end)
 
 
@@ -83,3 +83,12 @@ def test_crop_maps_logical_rect_to_retina_pixels_and_preserves_capture_context()
 def test_crop_rejects_a_selection_from_another_display():
     with pytest.raises(RegionSelectionError, match="display"):
         crop_screenshot(screenshot(), RegionSelection(8, 200, 100, 300, 200))
+
+
+def test_crop_rejects_capture_metadata_that_disagrees_with_decoded_image():
+    output = BytesIO()
+    Image.new("RGB", (10, 10), "white").save(output, format="PNG")
+    malformed = Screenshot(output.getvalue(), 1200, 800, 600, 400, 7, 123.0, "app", 100, 50)
+
+    with pytest.raises(RegionSelectionError, match="dimensions"):
+        crop_screenshot(malformed, RegionSelection(7, 200, 100, 300, 200))

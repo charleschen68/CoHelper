@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -27,6 +28,11 @@ class RegionSelection:
     height: float
 
     def __post_init__(self) -> None:
+        if not all(
+            math.isfinite(float(value))
+            for value in (self.x, self.y, self.width, self.height)
+        ):
+            raise RegionSelectionError("selection coordinates must be finite")
         if self.width < MIN_SELECTION_WIDTH or self.height < MIN_SELECTION_HEIGHT:
             raise RegionSelectionError(
                 "selection must be at least 120 by 80 logical points"
@@ -45,6 +51,11 @@ class RegionSelection:
     ) -> "RegionSelection":
         origin_x, origin_y = display_origin
         display_width, display_height = display_size
+        if not all(
+            math.isfinite(float(value))
+            for value in (*display_origin, *display_size, *start, *end)
+        ):
+            raise RegionSelectionError("selection coordinates must be finite")
         if display_width <= 0 or display_height <= 0:
             raise RegionSelectionError("display dimensions must be positive")
         left, right = sorted((float(start[0]), float(end[0])))
@@ -64,6 +75,14 @@ class RegionSelection:
 def crop_screenshot(screenshot: Screenshot, selection: RegionSelection) -> Screenshot:
     if screenshot.display_id != selection.display_id:
         raise RegionSelectionError("selection belongs to another display")
+    try:
+        image = Image.open(BytesIO(screenshot.image))
+        if image.size != (screenshot.pixel_width, screenshot.pixel_height):
+            raise RegionSelectionError("captured screenshot dimensions do not match metadata")
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, RegionSelectionError):
+            raise
+        raise RegionSelectionError("captured screenshot cannot be decoded") from exc
     right = selection.x + selection.width
     bottom = selection.y + selection.height
     screenshot_right = screenshot.origin_x + screenshot.logical_width
@@ -86,7 +105,6 @@ def crop_screenshot(screenshot: Screenshot, selection: RegionSelection) -> Scree
         raise RegionSelectionError("selection maps to an empty pixel region")
 
     try:
-        image = Image.open(BytesIO(screenshot.image))
         cropped = image.crop((left_px, top_px, right_px, bottom_px))
     except (OSError, ValueError) as exc:
         raise RegionSelectionError("captured screenshot cannot be decoded") from exc

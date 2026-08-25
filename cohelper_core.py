@@ -46,6 +46,15 @@ DEFAULT_CONFIG = {
     "clipboard": {"min_chars": 3, "max_chars": 20000, "poll_interval_ms": 400, "debounce_ms": 500, "process_plain_text_only": True},
     "knowledge": {"collection": "jarvis-wiki", "source_path": "", "limit": 5, "query_timeout_seconds": 20, "max_summary_source_chars": 50000},
     "translation": {"provider": "ollama", "model": "translategemma:4b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 60, "credential_account": "translation"},
+    "region_translation": {
+        "ocr_model": "qwen2.5vl:7b",
+        "translation_model": "translategemma:4b",
+        "ocr_base_url": "http://127.0.0.1:11434",
+        "translation_base_url": "http://127.0.0.1:11434",
+        "ocr_timeout_seconds": 60,
+        "translation_timeout_seconds": 60,
+        "queue_timeout_seconds": 30,
+    },
     "summary": {"provider": "ollama", "model": "qwen3:8b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 120, "credential_account": "summary"},
     "qmd": {"command": "qmd", "index": "index", "no_rerank": False, "models": {"embedding": "", "reranking": "", "generation": ""}},
     "vision": {"model": "qwen2.5vl:7b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 90},
@@ -119,7 +128,7 @@ class Config:
         os.replace(temporary, path)
 
     def _validate(self) -> None:
-        for section_name in ("features", "privacy", "clipboard", "knowledge", "translation", "summary", "qmd", "vision", "voice", "actions", "telegram"):
+        for section_name in ("features", "privacy", "clipboard", "knowledge", "translation", "region_translation", "summary", "qmd", "vision", "voice", "actions", "telegram"):
             if not isinstance(self.values.get(section_name), dict):
                 raise ConfigError(f"{section_name} 必须是 mapping")
         clipboard = self.values["clipboard"]
@@ -173,6 +182,25 @@ class Config:
             raise ConfigError("vision.base_url 必须是本机 Ollama 地址")
         if vision.get("model") != "qwen2.5vl:7b":
             raise ConfigError("vision.model 必须是 qwen2.5vl:7b")
+        region_translation = self.values["region_translation"]
+        if region_translation.get("ocr_model") != "qwen2.5vl:7b":
+            raise ConfigError("region_translation.ocr_model 必须是 qwen2.5vl:7b")
+        if region_translation.get("translation_model") != "translategemma:4b":
+            raise ConfigError("region_translation.translation_model 必须是 translategemma:4b")
+        for key in ("ocr_base_url", "translation_base_url"):
+            endpoint = urlparse(str(region_translation.get(key, "")))
+            if endpoint.hostname not in {"127.0.0.1", "localhost", "::1"}:
+                raise ConfigError(f"region_translation.{key} 必须是本机 Ollama 地址")
+        try:
+            region_timeouts = [
+                int(region_translation["ocr_timeout_seconds"]),
+                int(region_translation["translation_timeout_seconds"]),
+                int(region_translation["queue_timeout_seconds"]),
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ConfigError(f"region_translation 数值配置无效：{exc}") from exc
+        if any(timeout <= 0 for timeout in region_timeouts):
+            raise ConfigError("region_translation 超时配置必须大于 0")
         voice = self.values["voice"]
         if voice.get("sample_rate") != 16_000 or voice.get("channels") != 1:
             raise ConfigError("voice 必须使用 16 kHz mono")

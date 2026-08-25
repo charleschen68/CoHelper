@@ -15,6 +15,7 @@ def test_ai_drive_defaults_are_local_and_safely_allowlisted():
 
     assert config.section("features")["region_translation"] is False
     assert config.section("vision")["model"] == "qwen2.5vl:7b"
+    assert config.section("region_translation")["translation_model"] == "translategemma:4b"
     assert config.section("summary")["model"] == "qwen3:8b"
     assert config.section("actions")["allowed_bundle_ids"] == ["com.apple.Safari", "com.apple.TextEdit"]
     assert any("Reload this page" in item for item in config.section("actions")["allowed_capabilities"])
@@ -52,6 +53,13 @@ def test_vision_model_and_confirmation_ttl_are_fixed():
         Config({"vision": {"model": "another-model"}})
     with pytest.raises(ConfigError, match="固定为 30"):
         Config({"actions": {"confirmation_ttl_seconds": 31}})
+
+
+def test_region_translation_models_and_endpoint_are_local_and_fixed():
+    with pytest.raises(ConfigError, match="region_translation"):
+        Config({"region_translation": {"translation_model": "other"}})
+    with pytest.raises(ConfigError, match="region_translation"):
+        Config({"region_translation": {"translation_base_url": "https://example.com"}})
 
 
 def test_voice_input_is_disabled_by_default_and_validates_audio_boundary():
