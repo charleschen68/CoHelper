@@ -98,9 +98,20 @@ def crop_screenshot(screenshot: Screenshot, selection: RegionSelection) -> Scree
     scale_x = screenshot.pixel_width / screenshot.logical_width
     scale_y = screenshot.pixel_height / screenshot.logical_height
     left_px = round((selection.x - screenshot.origin_x) * scale_x)
-    top_px = round((selection.y - screenshot.origin_y) * scale_y)
+    # AppKit pointer/screen coordinates start at the display's bottom edge,
+    # whereas Pillow image rows start at the top edge.
+    top_px = round(
+        (
+            screenshot.logical_height
+            - (selection.y - screenshot.origin_y)
+            - selection.height
+        )
+        * scale_y
+    )
     right_px = round((right - screenshot.origin_x) * scale_x)
-    bottom_px = round((bottom - screenshot.origin_y) * scale_y)
+    bottom_px = round(
+        (screenshot.logical_height - (selection.y - screenshot.origin_y)) * scale_y
+    )
     if right_px <= left_px or bottom_px <= top_px:
         raise RegionSelectionError("selection maps to an empty pixel region")
 

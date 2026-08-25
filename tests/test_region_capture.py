@@ -80,6 +80,21 @@ def test_crop_maps_logical_rect_to_retina_pixels_and_preserves_capture_context()
     assert image.size == (600, 400)
 
 
+def test_crop_converts_cocoa_bottom_origin_to_image_top_origin():
+    output = BytesIO()
+    image = Image.new("RGB", (200, 200), "blue")
+    image.paste("red", (0, 0, 200, 100))
+    image.save(output, format="PNG")
+    frozen = Screenshot(
+        output.getvalue(), 200, 200, 200, 200, 7, 123.0, "app", 0, 0
+    )
+
+    # In Cocoa coordinates, y=100..200 is the top half of the display.
+    cropped = crop_screenshot(frozen, RegionSelection(7, 0, 100, 120, 100))
+
+    assert Image.open(BytesIO(cropped.image)).getpixel((20, 20)) == (255, 0, 0)
+
+
 def test_crop_rejects_a_selection_from_another_display():
     with pytest.raises(RegionSelectionError, match="display"):
         crop_screenshot(screenshot(), RegionSelection(8, 200, 100, 300, 200))
