@@ -71,3 +71,21 @@ def test_selection_canvas_forwards_drag_events_to_controller():
         ("dragged", (130.0, 240.0)),
         ("up", (150.0, 260.0)),
     ]
+
+
+def test_presented_selection_window_stays_visible_after_app_deactivation():
+    calls = []
+
+    class Window:
+        def setHidesOnDeactivate_(self, value):
+            calls.append(("hides", value))
+
+        def makeKeyAndOrderFront_(self, value):
+            calls.append(("key", value))
+
+        def orderFrontRegardless(self):
+            calls.append(("front",))
+
+    RegionSelectionOverlayController._present_window(Window())
+
+    assert calls == [("hides", False), ("key", None), ("front",)]

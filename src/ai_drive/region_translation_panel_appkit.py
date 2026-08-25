@@ -48,7 +48,7 @@ class RegionTranslationPanelController:
         if self._panel is None:
             self._build(snapshot)
         self._update(snapshot)
-        self._panel.makeKeyAndOrderFront_(None)
+        self._present_panel(self._panel)
 
     def close(self) -> None:
         if self._panel is not None:
@@ -62,6 +62,12 @@ class RegionTranslationPanelController:
             self._runtime.close()
         except Exception as exc:
             self._on_error(exc)
+
+    @staticmethod
+    def _present_panel(panel) -> None:
+        """Show results without activating the accessory application."""
+        panel.setHidesOnDeactivate_(False)
+        panel.orderFrontRegardless()
 
     def _build(self, snapshot: RegionTranslationPanelSnapshot) -> None:
         width = max(360.0, float(snapshot.selection.width))

@@ -187,7 +187,7 @@ class RegionSelectionOverlayController:
         self._drag_end = None
         self.current_selection = None
         self._window = _SelectionWindow.alloc().initWithController_frame_(self, frame)
-        self._window.makeKeyAndOrderFront_(None)
+        self._present_window(self._window)
         return generation
 
     def mouse_down(self, point: tuple[float, float]) -> None:
@@ -255,6 +255,13 @@ class RegionSelectionOverlayController:
             self._window.orderOut_(None)
             self._window.close()
             self._window = None
+
+    @staticmethod
+    def _present_window(window) -> None:
+        """Keep the explicit selection layer visible for an accessory app."""
+        window.setHidesOnDeactivate_(False)
+        window.makeKeyAndOrderFront_(None)
+        window.orderFrontRegardless()
 
     def _redraw(self) -> None:
         if self._window is not None:
