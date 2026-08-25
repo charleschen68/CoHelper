@@ -118,6 +118,9 @@ class CohelperApp(NSObject):
         self.voice_action_bridge = None
         self.voice_action_safety = None
         self.pending_voice_action = None
+        self.region_translation_runtime = None
+        self.region_translation_panel = None
+        self.region_translation_menu_item = None
         try:
             self.voice_router = VoiceCommandRouter(self.config.section("voice")["command_aliases"])
         except VoiceCommandRouterError as exc:
@@ -145,6 +148,8 @@ class CohelperApp(NSObject):
             self._start_speech_feature()
         if self.startup_error is None and self.config.enabled("voice_direct_actions"):
             self._start_voice_direct_action_feature()
+        if self.startup_error is None and self.config.enabled("region_translation"):
+            self._start_region_translation_feature()
         self._start_clipboard_timer()
         if self.startup_error:
             self._show_config_error()
@@ -268,12 +273,68 @@ class CohelperApp(NSObject):
         menu.addItemWithTitle_action_keyEquivalent_("环境诊断与设置", "runDiagnostics:", "")
         menu.addItemWithTitle_action_keyEquivalent_("模型设置", "configureModels:", "")
         menu.addItemWithTitle_action_keyEquivalent_("高级配置", "configureAdvanced:", "")
+        self.region_translation_menu_item = menu.addItemWithTitle_action_keyEquivalent_("翻译屏幕区域", "translateRegion:", "")
+        self.region_translation_menu_item.setEnabled_(self.config.enabled("region_translation"))
         menu.addItemWithTitle_action_keyEquivalent_("请求视觉操作权限", "requestVisionPermissions:", "")
         menu.addItemWithTitle_action_keyEquivalent_("取消环境设置", "cancelSetup:", "")
         menu.addItemWithTitle_action_keyEquivalent_("打开配置目录", "openConfig:", "")
         menu.addItem_(NSMenuItem.separatorItem())
         menu.addItemWithTitle_action_keyEquivalent_("退出", "terminate:", "q")
         self.status_item.setMenu_(menu)
+
+    def _start_region_translation_feature(self):
+        if self.region_translation_runtime is not None or not self.config.enabled("region_translation"):
+            return
+        from ai_drive.region_translation_runtime import RegionTranslationRuntime
+
+        self.region_translation_runtime = RegionTranslationRuntime(
+            self.config,
+            on_panel_change=lambda snapshot: AppHelper.callAfter(
+                self._show_region_translation_panel, snapshot
+            ),
+            on_error=lambda error: AppHelper.callAfter(self._region_translation_error, error),
+        )
+
+    def _stop_region_translation_feature(self):
+        panel, self.region_translation_panel = self.region_translation_panel, None
+        runtime, self.region_translation_runtime = self.region_translation_runtime, None
+        if panel is not None:
+            panel.close()
+        if runtime is not None:
+            runtime.close()
+
+    def translateRegion_(self, _sender):
+        if not self.config.enabled("region_translation"):
+            self._show_error("区域翻译未启用", "请先在高级配置中启用区域翻译，然后重新启动 cohelper。")
+            return
+        self._start_region_translation_feature()
+        try:
+            self.region_translation_runtime.trigger()
+            self._set_status("cohelper (选择区域)")
+        except PermissionError:
+            self._show_error(
+                "需要屏幕录制权限",
+                "请在系统设置 > 隐私与安全性 > 屏幕录制中允许 cohelper，然后重新触发。",
+            )
+        except Exception as exc:
+            self._region_translation_error(exc)
+
+    def _show_region_translation_panel(self, snapshot):
+        if self.region_translation_runtime is None:
+            return
+        if self.region_translation_panel is None:
+            from ai_drive.region_translation_panel_appkit import RegionTranslationPanelController
+
+            self.region_translation_panel = RegionTranslationPanelController(
+                self.region_translation_runtime,
+                on_error=self._region_translation_error,
+            )
+        self.region_translation_panel.show(snapshot)
+        self._set_status("cohelper (区域翻译)")
+
+    def _region_translation_error(self, error):
+        self._set_status("cohelper (区域翻译失败)")
+        self._show_error("区域翻译失败", f"{type(error).__name__}: {error}")
 
     def _start_voice_feature(self):
         if self.voice_input is not None or not self.config.enabled("voice_input"):
@@ -672,6 +733,7 @@ class CohelperApp(NSObject):
         self._stop_output_feature()
         self._stop_voice_feature()
         self._stop_speech_feature()
+        self._stop_region_translation_feature()
 
     def tickOutputOverlay_(self, timer):
         if self.output_overlay is not None:
