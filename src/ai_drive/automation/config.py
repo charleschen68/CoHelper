@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -104,6 +106,35 @@ def parse_automation_config(payload: object, *, base_dir: Path) -> AutomationCon
         except AutomationConfigError as exc:
             disabled_groups[group_name] = str(exc)
     return AutomationConfig(interval, groups, disabled_groups)
+
+
+def update_scan_interval(path: Path, interval_seconds: float) -> AutomationConfig:
+    """Atomically update the one low-risk monitor setting exposed by AppKit."""
+    interval = _number(interval_seconds, "scan_interval_seconds")
+    if not 1 <= interval <= 300:
+        raise AutomationConfigError("scan_interval_seconds must be between 1 and 300")
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise AutomationConfigError(f"cannot read automation configuration: {exc}") from exc
+    except yaml.YAMLError as exc:
+        raise AutomationConfigError(f"cannot parse automation configuration: {exc}") from exc
+    root = _mapping(payload, "configuration")
+    updated = dict(root)
+    updated["scan_interval_seconds"] = int(interval) if interval.is_integer() else interval
+    validated = parse_automation_config(updated, base_dir=path.parent)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    try:
+        original_mode = stat.S_IMODE(path.stat().st_mode)
+        with temporary.open("w", encoding="utf-8") as file:
+            file.write(yaml.safe_dump(updated, allow_unicode=True, sort_keys=False))
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(temporary, original_mode)
+        temporary.replace(path)
+    except OSError as exc:
+        raise AutomationConfigError(f"cannot save automation configuration: {exc}") from exc
+    return AutomationConfig(validated.scan_interval_seconds, validated.groups, validated.disabled_groups, path)
 
 
 def _parse_rule(payload: object, base_dir: Path, group_name: str, known_ids: set[str]) -> RuleSpec:

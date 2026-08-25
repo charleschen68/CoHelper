@@ -35,6 +35,8 @@ from AppKit import (
     NSStatusItem,
     NSTextField,
     NSTextView,
+    NSTabView,
+    NSTabViewItem,
     NSView,
     NSViewHeightSizable,
     NSViewWidthSizable,
@@ -58,6 +60,7 @@ from ai_drive.output import (
     OutputSeverity,
     OutputSource,
 )
+from ai_drive.automation.config import AutomationConfig, AutomationConfigError, DEFAULT_CONFIG_PATH, update_scan_interval
 from apps.overlay import OutputOverlayController
 from apps.voice import MacMicrophoneCapture, MacPushToTalkMonitor, MicrophoneCaptureError
 from cohelper_core import APP_SUPPORT, CONFIG_PATH, Config, ConfigError, TaskCallbacks, TaskCoordinator
@@ -979,33 +982,27 @@ class CohelperApp(NSObject):
         if getattr(self, "advanced_window", None) is not None:
             return
         self.advanced_window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(760, 60, 720, 780),
+            NSMakeRect(660, 60, 860, 780),
             NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable,
             NSBackingStoreBuffered,
             False,
         )
-        self.advanced_window.setTitle_("cohelper 高级配置")
+        self.advanced_window.setTitle_("cohelper 配置中心")
         self.advanced_window.setReleasedWhenClosed_(False)
         self.advanced_controls = {}
 
-        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(16, 64, 688, 696))
-        scroll.setHasVerticalScroller_(True)
-        scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
-        document = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 660, 1880))
-        scroll.setDocumentView_(document)
-        self.advanced_window.contentView().addSubview_(scroll)
-        self._advanced_document = document
+        tabs = NSTabView.alloc().initWithFrame_(NSMakeRect(16, 62, 828, 700))
+        tabs.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        self.advanced_window.contentView().addSubview_(tabs)
+        self.advanced_tabs = tabs
 
-        y = 1840
-        y = self._advanced_section(document, y, "运行模块", "控制剪贴板内容会经过哪些处理，以及是否允许访问外部 API。")
+        document, y = self._advanced_tab("assistant", "助手与知识库")
+        y = self._advanced_section(document, y, "助手能力", "开关决定模块是否启动；关闭后不会加载模型、请求权限或处理对应内容。")
         for key, title in (
             ("translation", "启用翻译"),
             ("knowledge_search", "启用知识库检索"),
             ("knowledge_answer", "启用知识回答/总结"),
             ("overlay", "启用左侧输出浮层与本机输出接口"),
-            ("voice_input", "启用本地语音输入（需要 Whisper 与麦克风权限）"),
-            ("voice_output", "启用本地答案朗读（macOS 系统语音）"),
-            ("voice_direct_actions", "启用受保护的语音直行动作（默认关闭）"),
         ):
             y = self._advanced_switch(document, y, key, title, self.config.enabled(key))
         y = self._advanced_switch(document, y, "allow_external_api", "允许外部 API（默认关闭）", bool(self.config.section("privacy")["allow_external_api"]))
@@ -1042,9 +1039,63 @@ class CohelperApp(NSObject):
             y = self._advanced_text(document, y, f"{kind}.timeout_seconds", "超时（秒）", str(section["timeout_seconds"]))
             y = self._advanced_text(document, y, f"{kind}.credential_account", "Keychain Account", str(section.get("credential_account", kind)))
             y = self._advanced_secret(document, y, f"{kind}.api_key", "API Key（留空不修改）")
+        self._finish_advanced_tab(document, y)
 
+        document, y = self._advanced_tab("voice", "语音与动作")
+        y = self._advanced_section(document, y, "语音体验", "按住 Option-Space 录音。转写、回答朗读和直行动作均为独立开关。")
+        for key, title in (
+            ("voice_input", "启用本地语音输入（Whisper + 麦克风）"),
+            ("voice_output", "启用本地答案朗读（macOS 系统语音）"),
+            ("voice_direct_actions", "启用受保护的语音直行动作（需要确认）"),
+        ):
+            y = self._advanced_switch(document, y, key, title, self.config.enabled(key))
+        voice = self.config.section("voice")
         y -= 12
-        y = self._advanced_section(document, y, "视觉与操作", "视觉模型仅允许本机 Ollama；操作只允许白名单应用中的单次确认点击。")
+        y = self._advanced_section(document, y, "本地转写", "音频只在内存中处理。保持 16 kHz 单声道，避免发送不兼容格式。")
+        for key, title in (
+            ("server_executable", "Whisper 可执行文件"),
+            ("model_path", "Whisper 模型文件"),
+            ("language", "识别语言"),
+            ("server_port", "本地服务端口"),
+            ("vad_threshold", "语音检测阈值"),
+            ("silence_seconds", "停顿判定（秒）"),
+        ):
+            y = self._advanced_text(document, y, f"voice.{key}", title, str(voice[key]))
+        y -= 12
+        y = self._advanced_section(document, y, "语音命令", "每条命令用 | 分隔，格式为“命令名: 短语 / 别名”。短语必须以“执行”结尾，且只会准备受保护动作，不能直接点击。")
+        y = self._advanced_text(document, y, "voice.command_aliases", "命令短语", self._format_command_aliases(voice["command_aliases"]), placeholder="refresh_safari: 刷新 Safari 执行")
+        y = self._advanced_text(document, y, "voice.command_instructions", "动作说明", self._format_command_instructions(voice["command_instructions"]), placeholder="refresh_safari: Safari 的刷新按钮")
+        self._finish_advanced_tab(document, y)
+
+        document, y = self._advanced_tab("monitor", "屏幕监控")
+        y = self._advanced_section(document, y, "屏幕监控", "监控服务独立运行。此处展示已验证的规则，并允许调整低风险扫描间隔；规则动作保持只读。")
+        self.automation_rules_path = DEFAULT_CONFIG_PATH
+        try:
+            automation = AutomationConfig.load(self.automation_rules_path)
+            y = self._advanced_read_only(document, y, "规则文件", str(self.automation_rules_path))
+            y = self._advanced_text(document, y, "automation.scan_interval_seconds", "扫描间隔（秒）", str(automation.scan_interval_seconds), placeholder="1 到 300")
+            y -= 12
+            y = self._advanced_section(document, y, "规则组", "每个卡片显示模板、优先级和动作类型。运行状态仍由独立监控服务控制。")
+            for group in automation.groups.values():
+                rules = group.rules
+                details = "；".join(
+                    f"{rule.id}（优先级 {rule.priority}，动作：{', '.join(action.kind for action in rule.actions)}）"
+                    for rule in rules
+                )
+                y = self._advanced_read_only(document, y, group.name, details)
+            for group, reason in automation.disabled_groups.items():
+                y = self._advanced_read_only(document, y, f"{group}（已禁用）", reason)
+        except AutomationConfigError as exc:
+            y = self._advanced_read_only(document, y, "监控配置", f"无法加载：{exc}")
+        save_monitor = NSButton.alloc().initWithFrame_(NSMakeRect(255, y, 180, 28))
+        save_monitor.setTitle_("保存扫描间隔")
+        save_monitor.setTarget_(self)
+        save_monitor.setAction_("saveAutomationConfig:")
+        document.addSubview_(save_monitor)
+        self._finish_advanced_tab(document, y - 42)
+
+        document, y = self._advanced_tab("security", "视觉、权限与 Telegram")
+        y = self._advanced_section(document, y, "视觉与操作", "视觉模型仅允许本机 Ollama。操作仅允许白名单应用中的单次确认点击。")
         vision = self.config.section("vision")
         actions = self.config.section("actions")
         y = self._advanced_text(document, y, "vision.model", "视觉模型", str(vision["model"]))
@@ -1057,30 +1108,46 @@ class CohelperApp(NSObject):
         y = self._advanced_text(document, y, "actions.confirmation_ttl_seconds", "确认有效期（秒）", str(actions["confirmation_ttl_seconds"]))
 
         y -= 12
-        y = self._advanced_section(document, y, "Telegram Bridge", "Token 只保存到 macOS Keychain；启用后使用 ai-drive-telegram 启动。")
+        y = self._advanced_section(document, y, "Telegram Bridge", "Token 只保存到 macOS Keychain；User ID 与 Chat ID 必须同时配置，避免消息被错误路由。")
         telegram = self.config.section("telegram")
         y = self._advanced_switch(document, y, "telegram.enabled", "启用 Telegram Bridge", bool(telegram["enabled"]))
         y = self._advanced_text(document, y, "telegram.allowed_user_id", "允许的 Telegram User ID", str(telegram["allowed_user_id"]))
+        y = self._advanced_text(document, y, "telegram.allowed_chat_id", "允许的 Telegram Chat ID", str(telegram["allowed_chat_id"]))
         y = self._advanced_text(document, y, "telegram.credential_account", "Keychain Account", str(telegram["credential_account"]))
         y = self._advanced_secret(document, y, "telegram.token", "Telegram Token（留空不修改）")
+        self._finish_advanced_tab(document, y)
 
-        # Keep the document tall enough for the top-most section.  The scroll
-        # view, rather than the window, owns the vertical layout.
-        document.setFrameSize_((660, 1880))
-        cancel = NSButton.alloc().initWithFrame_(NSMakeRect(500, 18, 90, 30))
+        cancel = NSButton.alloc().initWithFrame_(NSMakeRect(640, 18, 90, 30))
         cancel.setTitle_("取消")
         cancel.setTarget_(self)
         cancel.setAction_("cancelAdvancedConfig:")
         self.advanced_window.contentView().addSubview_(cancel)
-        save = NSButton.alloc().initWithFrame_(NSMakeRect(600, 18, 100, 30))
+        save = NSButton.alloc().initWithFrame_(NSMakeRect(740, 18, 100, 30))
         save.setTitle_("保存配置")
         save.setKeyEquivalent_("\\r")
         save.setTarget_(self)
         save.setAction_("saveAdvancedConfig:")
         self.advanced_window.contentView().addSubview_(save)
 
+    def _advanced_tab(self, identifier, label):
+        item = NSTabViewItem.alloc().initWithIdentifier_(identifier)
+        item.setLabel_(label)
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, 828, 672))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        document = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 800, 2600))
+        scroll.setDocumentView_(document)
+        item.setView_(scroll)
+        self.advanced_tabs.addTabViewItem_(item)
+        return document, 2540
+
     @staticmethod
-    def _advanced_label(parent, y, title, width=210):
+    def _finish_advanced_tab(document, y):
+        del y
+        document.setFrameSize_((800, 2600))
+
+    @staticmethod
+    def _advanced_label(parent, y, title, width=225):
         label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, y, width, 24))
         label.setStringValue_(title)
         label.setBezeled_(False)
@@ -1109,7 +1176,7 @@ class CohelperApp(NSObject):
 
     def _advanced_text(self, parent, y, key, title, value, placeholder=""):
         self._advanced_label(parent, y, title)
-        field = NSTextField.alloc().initWithFrame_(NSMakeRect(235, y, 405, 24))
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(255, y, 505, 24))
         field.setStringValue_(value)
         if placeholder:
             field.setPlaceholderString_(placeholder)
@@ -1119,7 +1186,7 @@ class CohelperApp(NSObject):
 
     def _advanced_secret(self, parent, y, key, title):
         self._advanced_label(parent, y, title)
-        field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(235, y, 405, 24))
+        field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(255, y, 505, 24))
         field.setPlaceholderString_("留空保持现有 Keychain 凭据")
         parent.addSubview_(field)
         self.advanced_controls[key] = field
@@ -1136,7 +1203,7 @@ class CohelperApp(NSObject):
 
     def _advanced_popup(self, parent, y, key, title, values, selected):
         self._advanced_label(parent, y, title)
-        popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(235, y, 405, 26), False)
+        popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(255, y, 505, 26), False)
         popup.addItemsWithTitles_(values)
         if selected in values:
             popup.selectItemWithTitle_(selected)
@@ -1146,12 +1213,63 @@ class CohelperApp(NSObject):
 
     def _advanced_path(self, parent, y, key, title, value):
         y = self._advanced_text(parent, y, key, title, value, placeholder="可留空")
-        browse = NSButton.alloc().initWithFrame_(NSMakeRect(570, y + 34, 70, 24))
+        browse = NSButton.alloc().initWithFrame_(NSMakeRect(690, y + 34, 70, 24))
         browse.setTitle_("选择…")
         browse.setTarget_(self)
         browse.setAction_("browseAdvancedSource:")
         parent.addSubview_(browse)
         return y
+
+    def _advanced_read_only(self, parent, y, title, value):
+        self._advanced_label(parent, y, title)
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(255, y, 505, 38))
+        field.setStringValue_(value)
+        field.setBezeled_(False)
+        field.setDrawsBackground_(False)
+        field.setEditable_(False)
+        field.setSelectable_(True)
+        field.setLineBreakMode_(0)
+        parent.addSubview_(field)
+        return y - 48
+
+    @staticmethod
+    def _format_command_aliases(commands):
+        return " | ".join(
+            f"{command}: {' / '.join(phrases)}" for command, phrases in commands.items()
+        )
+
+    @staticmethod
+    def _format_command_instructions(instructions):
+        return " | ".join(
+            f"{command}: {instruction}" for command, instruction in instructions.items()
+        )
+
+    @staticmethod
+    def _parse_command_aliases(value):
+        result = {}
+        for entry in (item.strip() for item in value.split("|")):
+            if not entry:
+                continue
+            command, separator, phrases = entry.partition(":")
+            if not separator or not command.strip():
+                raise ValueError("命令短语使用“命令名: 短语 / 别名”格式")
+            values = [phrase.strip() for phrase in phrases.split("/") if phrase.strip()]
+            if not values:
+                raise ValueError("每个命令至少需要一个短语")
+            result[command.strip()] = values
+        return result
+
+    @staticmethod
+    def _parse_command_instructions(value):
+        result = {}
+        for entry in (item.strip() for item in value.split("|")):
+            if not entry:
+                continue
+            command, separator, instruction = entry.partition(":")
+            if not separator or not command.strip() or not instruction.strip():
+                raise ValueError("动作说明使用“命令名: 原生控件说明”格式")
+            result[command.strip()] = instruction.strip()
+        return result
 
     def browseAdvancedSource_(self, sender):
         panel = NSOpenPanel.openPanel()
@@ -1165,12 +1283,27 @@ class CohelperApp(NSObject):
     def cancelAdvancedConfig_(self, sender):
         self.advanced_window.orderOut_(None)
 
+    def saveAutomationConfig_(self, sender):
+        control = self.advanced_controls.get("automation.scan_interval_seconds")
+        if control is None:
+            self._show_error("无法保存监控配置", "当前没有可保存的监控配置。")
+            return
+        try:
+            interval = float(str(control.stringValue()).strip())
+            updated = update_scan_interval(self.automation_rules_path, interval)
+        except (ValueError, AutomationConfigError) as exc:
+            self._show_error("无法保存监控配置", str(exc))
+            return
+        self._show_info("屏幕监控配置已保存", f"扫描间隔已更新为 {updated.scan_interval_seconds:g} 秒。运行中的监控会安全停止，请手动重新启动后生效。")
+
     def saveAdvancedConfig_(self, sender):
         candidate = Config(copy.deepcopy(self.config.values))
         try:
             for key, control in self.advanced_controls.items():
                 if key == "allow_external_api":
                     candidate.section("privacy")["allow_external_api"] = control.state() == 1
+                elif key == "automation.scan_interval_seconds":
+                    continue
                 elif key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output", "voice_direct_actions", "process_plain_text_only"}:
                     target = "features" if key in {"translation", "knowledge_search", "knowledge_answer", "overlay", "voice_input", "voice_output", "voice_direct_actions"} else "clipboard"
                     candidate.section(target)[key] = control.state() == 1
@@ -1184,6 +1317,10 @@ class CohelperApp(NSObject):
                     continue
                 elif key == "telegram.token":
                     continue
+                elif key == "voice.command_aliases":
+                    candidate.section("voice")["command_aliases"] = self._parse_command_aliases(str(control.stringValue()).strip())
+                elif key == "voice.command_instructions":
+                    candidate.section("voice")["command_instructions"] = self._parse_command_instructions(str(control.stringValue()).strip())
                 else:
                     parts = key.split(".")
                     section = candidate.section(parts[0])
@@ -1194,8 +1331,10 @@ class CohelperApp(NSObject):
                             value = [item.strip() for item in value.split(",") if item.strip()]
                         elif field == "minimum_confidence":
                             value = float(value)
-                        elif field in {"min_chars", "max_chars", "poll_interval_ms", "debounce_ms", "limit", "query_timeout_seconds", "max_summary_source_chars", "timeout_seconds", "screenshot_max_age_seconds", "confirmation_ttl_seconds", "allowed_user_id"}:
+                        elif field in {"min_chars", "max_chars", "poll_interval_ms", "debounce_ms", "limit", "query_timeout_seconds", "max_summary_source_chars", "timeout_seconds", "screenshot_max_age_seconds", "confirmation_ttl_seconds", "allowed_user_id", "allowed_chat_id", "server_port", "vad_threshold"}:
                             value = int(value)
+                        elif field in {"silence_seconds"}:
+                            value = float(value)
                         section[field] = value
                     else:
                         section[parts[1]][parts[2]] = value
@@ -1224,7 +1363,6 @@ class CohelperApp(NSObject):
         previous_overlay_enabled = self.config.enabled("overlay")
         previous_voice_enabled = self.config.enabled("voice_input")
         previous_voice_output_enabled = self.config.enabled("voice_output")
-        previous_voice_direct_enabled = self.config.enabled("voice_direct_actions")
         previous_voice_direct_enabled = self.config.enabled("voice_direct_actions")
         self.config = candidate
         config_generation = self.coordinator.update_config(candidate)

@@ -1,8 +1,9 @@
 from pathlib import Path
+import stat
 
 import pytest
 
-from ai_drive.automation.config import AutomationConfigError, REPOSITORY_ROOT, parse_automation_config
+from ai_drive.automation.config import AutomationConfigError, REPOSITORY_ROOT, parse_automation_config, update_scan_interval
 
 
 def test_parses_external_rule_groups_with_safe_defaults(tmp_path: Path):
@@ -33,7 +34,6 @@ def test_parses_external_rule_groups_with_safe_defaults(tmp_path: Path):
         },
         base_dir=tmp_path,
     )
-
     rule = config.groups["accept"].rules[0]
     assert config.scan_interval_seconds == 5
     assert rule.templates[0].path == tmp_path / "templates/accept.png"
@@ -74,3 +74,32 @@ def test_disables_only_the_invalid_group_when_other_groups_are_valid(tmp_path: P
 
     assert tuple(config.groups) == ("valid",)
     assert "unsupported action type" in config.disabled_groups["invalid"]
+
+
+def test_update_scan_interval_preserves_rules_and_revalidates(tmp_path: Path):
+    path = tmp_path / "rules.yaml"
+    path.write_text(
+        """scan_interval_seconds: 5
+groups:
+  notice:
+    rules:
+      - id: notice
+        templates:
+          - path: notice.png
+            confidence: 0.9
+        actions:
+          - type: sound
+            mode: once
+""",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+
+    updated = update_scan_interval(path, 12)
+
+    assert updated.scan_interval_seconds == 12
+    assert "notice" in updated.groups
+    assert "scan_interval_seconds: 12" in path.read_text(encoding="utf-8")
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    with pytest.raises(AutomationConfigError, match="between 1 and 300"):
+        update_scan_interval(path, 0)

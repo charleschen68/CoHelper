@@ -299,6 +299,37 @@
   enabled-app acceptance run, including changed-target and emergency-stop
   rejection.
 
+## 2026-08-24 — Visual configuration center in progress
+
+### Implemented so far
+
+- Replaced the single long advanced form with separate native tabs for assistant
+  and knowledge settings, voice and actions, screen monitoring, and visual/
+  Telegram security settings.
+- Added visible voice worker, model, VAD, command-alias, and command-action
+  settings; command input uses a constrained readable format and still passes
+  the existing configuration validation.
+- Added a screen-monitor view that lists groups, priorities, templates/actions,
+  and supports atomic save of the bounded 1–300 second scan interval without
+  editing unsafe actions or secret references.
+- Added Telegram Chat ID to the UI so an enabled bridge cannot be configured
+  with only a user ID.
+
+### Verified so far
+
+- Focused configuration/editor tests: 7 passed.
+- A real AppKit construction check produced all four tabs and the voice command,
+  monitor scan-interval, and Telegram Chat ID controls without displaying or
+  saving the window.
+- Full repository regression: 209 passed.
+
+### Deliberate boundary
+
+- Monitor rule actions, templates, secret references, and arming state are
+  displayed but not edited here. They remain in the separately launched,
+  guarded automation service so a configuration window cannot silently arm or
+  broaden screen actions.
+
 ### Remaining Phase 2 work
 
 - The menu controls, global/local `Option-Space` press/release handling, and
