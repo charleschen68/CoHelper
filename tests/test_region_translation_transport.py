@@ -64,6 +64,22 @@ class BlockingPostSession(FakeSession):
         return self.response
 
 
+class SlowFirstCloseResponse(FakeResponse):
+    def __init__(self, rows):
+        super().__init__(rows)
+        self.close_started = threading.Event()
+        self.allow_first_close = threading.Event()
+        self._close_count = 0
+
+    def close(self):
+        self._close_count += 1
+        self.closed = True
+        self.release.set()
+        if threading.current_thread().name == "region-translation-cancel":
+            self.close_started.set()
+            assert self.allow_first_close.wait(2)
+
+
 def row(content, done=False):
     return json.dumps({"message": {"content": content}, "done": done})
 
@@ -209,6 +225,32 @@ def test_cancel_event_closes_active_response_without_direct_client_cancel():
     assert not worker.is_alive()
     assert response.closed is True
     assert len(errors) == 1
+
+
+def test_delayed_old_cancel_cannot_cancel_a_reused_request():
+    first = SlowFirstCloseResponse([row("partial"), "__BLOCK__"])
+    session = FakeSession(first)
+    client = OllamaRegionTranslationClient(session=session)
+    cancel = threading.Event()
+    errors = []
+    worker = threading.Thread(
+        target=lambda: _capture_error(
+            errors,
+            lambda: client.complete("translategemma:4b", "system", "user", cancel),
+        )
+    )
+    worker.start()
+    assert first.started.wait(1)
+    cancel.set()
+    assert first.close_started.wait(1)
+    worker.join(2)
+    assert not worker.is_alive()
+
+    second = FakeResponse([row("second"), row("", True)])
+    session.response = second
+    assert client.complete("translategemma:4b", "system", "user") == "second"
+    first.allow_first_close.set()
+    assert errors
 
 
 def test_cancel_is_idempotent_when_no_request_is_active():

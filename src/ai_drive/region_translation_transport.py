@@ -38,10 +38,18 @@ class _OllamaStreamingClient:
         self._lock = threading.RLock()
         self._response = None
         self._request_active = False
+        self._request_token = 0
         self._cancel_requested = False
 
     def cancel(self) -> bool:
+        return self._cancel_for_token(None)
+
+    def _cancel_for_token(self, token: int | None) -> bool:
         with self._lock:
+            if not self._request_active or (
+                token is not None and token != self._request_token
+            ):
+                return True
             self._cancel_requested = True
             response = self._response
             self._response = None
@@ -67,6 +75,8 @@ class _OllamaStreamingClient:
                 raise RegionTransportError("concurrent local model request")
             self._cancel_requested = False
             self._request_active = True
+            self._request_token += 1
+            request_token = self._request_token
         payload = {"model": model, "stream": True, "messages": messages}
         if format_json:
             payload["format"] = "json"
@@ -76,7 +86,7 @@ class _OllamaStreamingClient:
         if cancel is not None:
             watcher = threading.Thread(
                 target=self._watch_cancel,
-                args=(cancel, watcher_stop),
+                args=(cancel, watcher_stop, request_token),
                 name="region-translation-cancel",
                 daemon=True,
             )
@@ -142,10 +152,12 @@ class _OllamaStreamingClient:
         with self._lock:
             return self._cancel_requested
 
-    def _watch_cancel(self, cancel: threading.Event, stop: threading.Event) -> None:
+    def _watch_cancel(
+        self, cancel: threading.Event, stop: threading.Event, request_token: int
+    ) -> None:
         while not stop.wait(0.05):
             if cancel.is_set():
-                self.cancel()
+                self._cancel_for_token(request_token)
                 return
 
 
