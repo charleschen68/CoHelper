@@ -1,7 +1,9 @@
 import pytest
 from AppKit import NSMakeRect
 
+import ai_drive.region_selection_appkit as selection_appkit
 from ai_drive.region_selection_appkit import RegionSelectionOverlayController, _SelectionCanvas
+from ai_drive.vision import Screenshot
 
 
 class Capture:
@@ -10,6 +12,20 @@ class Capture:
 
     def has_permission(self):
         return self.permission
+
+    def capture_region(self, selection):
+        return Screenshot(
+            b"crop",
+            int(selection.width),
+            int(selection.height),
+            selection.width,
+            selection.height,
+            selection.display_id,
+            1.0,
+            "app",
+            selection.x,
+            selection.y,
+        )
 
 
 def test_trigger_requires_screen_recording_before_creating_overlay():
@@ -89,3 +105,33 @@ def test_presented_selection_window_stays_visible_after_app_deactivation():
     RegionSelectionOverlayController._present_window(Window())
 
     assert calls == [("hides", False), ("key", None), ("front",)]
+
+
+def test_delayed_old_capture_worker_cannot_consume_new_selection(monkeypatch):
+    selected = []
+    errors = []
+    monkeypatch.setattr(
+        selection_appkit.AppHelper,
+        "callAfter",
+        lambda callback, *args: callback(*args),
+    )
+    controller = RegionSelectionOverlayController(
+        capture=Capture(True),
+        on_selected=lambda generation, selection, screenshot: selected.append(
+            (generation, selection, screenshot)
+        ),
+        on_error=lambda generation, error: errors.append((generation, error)),
+    )
+
+    first = controller._session.begin(1, (0, 0), (1000, 800))
+    controller._session.update_drag((100, 100), (300, 250))
+    second = controller._session.begin(1, (0, 0), (1000, 800))
+    second_selection = controller._session.update_drag((400, 300), (700, 500))
+
+    controller._capture_worker(first)
+    controller._capture_worker(second)
+
+    assert errors == []
+    assert [(generation, selection) for generation, selection, _screenshot in selected] == [
+        (second, second_selection)
+    ]

@@ -241,8 +241,10 @@ class RegionSelectionOverlayController:
 
     def _capture_worker(self, generation: int) -> None:
         try:
-            screenshot = self._session.finish(self._capture.capture_region)
+            screenshot = self._session.finish(generation, self._capture.capture_region)
         except Exception as exc:
+            if self._session.snapshot().generation != generation:
+                return
             AppHelper.callAfter(self._on_error, generation, exc)
             return
         snapshot = self._session.snapshot()

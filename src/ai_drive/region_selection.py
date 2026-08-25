@@ -87,12 +87,17 @@ class RegionSelectionSession:
             self._selection = selection
             return selection
 
-    def finish(self, capture: Callable[[RegionSelection], Screenshot]) -> Screenshot:
+    def finish(
+        self,
+        generation: int,
+        capture: Callable[[RegionSelection], Screenshot],
+    ) -> Screenshot:
         with self._lock:
+            if generation != self._generation:
+                raise RegionSelectionError("selection was superseded before capture")
             self._require_selecting()
             if self._selection is None:
                 raise RegionSelectionError("a valid selection is required before capture")
-            generation = self._generation
             selection = self._selection
         try:
             screenshot = capture(selection)
