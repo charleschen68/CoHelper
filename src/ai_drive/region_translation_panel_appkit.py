@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import objc
 from AppKit import (
     NSBackingStoreBuffered,
     NSApp,
@@ -22,6 +23,7 @@ from AppKit import (
     NSWindowStyleMaskTitled,
     NSFloatingWindowLevel,
 )
+from Foundation import NSObject
 
 from ai_drive.region_translation import TranslationTarget
 from ai_drive.region_translation_panel import (
@@ -30,10 +32,13 @@ from ai_drive.region_translation_panel import (
 )
 
 
-class RegionTranslationPanelController:
+class RegionTranslationPanelController(NSObject):
     """Render one frozen screenshot and its OCR/translation comparison views."""
 
-    def __init__(self, runtime, *, on_error=None):
+    def initWithRuntime_onError_(self, runtime, on_error):
+        self = objc.super(RegionTranslationPanelController, self).init()
+        if self is None:
+            return None
         self._runtime = runtime
         self._on_error = on_error or (lambda _error: None)
         self._panel = None
@@ -43,7 +48,9 @@ class RegionTranslationPanelController:
         self._copy_button = None
         self._retry_button = None
         self._snapshot = None
+        return self
 
+    @objc.python_method
     def show(self, snapshot: RegionTranslationPanelSnapshot) -> None:
         self._snapshot = snapshot
         if self._panel is None:
@@ -51,6 +58,7 @@ class RegionTranslationPanelController:
         self._update(snapshot)
         self._present_panel(self._panel)
 
+    @objc.python_method
     def close(self) -> None:
         if self._panel is not None:
             self._panel.orderOut_(None)
@@ -65,6 +73,7 @@ class RegionTranslationPanelController:
             self._on_error(exc)
 
     @staticmethod
+    @objc.python_method
     def _present_panel(panel) -> None:
         """Make the result panel visible after the selection overlay closes."""
         panel.setHidesOnDeactivate_(False)
@@ -72,6 +81,7 @@ class RegionTranslationPanelController:
         panel.orderFrontRegardless()
         NSApp().activateIgnoringOtherApps_(True)
 
+    @objc.python_method
     def _build(self, snapshot: RegionTranslationPanelSnapshot) -> None:
         width = max(360.0, float(snapshot.selection.width))
         height = max(220.0, float(snapshot.selection.height))
@@ -144,6 +154,7 @@ class RegionTranslationPanelController:
         self._retry_button.setAction_("retry:")
         content.addSubview_(self._retry_button)
 
+    @objc.python_method
     def _update(self, snapshot: RegionTranslationPanelSnapshot) -> None:
         if self._panel is None:
             return

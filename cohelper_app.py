@@ -328,9 +328,9 @@ class CohelperApp(NSObject):
         if self.region_translation_panel is None:
             from ai_drive.region_translation_panel_appkit import RegionTranslationPanelController
 
-            self.region_translation_panel = RegionTranslationPanelController(
+            self.region_translation_panel = RegionTranslationPanelController.alloc().initWithRuntime_onError_(
                 self.region_translation_runtime,
-                on_error=self._region_translation_error,
+                self._region_translation_error,
             )
         self.region_translation_panel.show(snapshot)
         self._set_status("cohelper (区域翻译)")
