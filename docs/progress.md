@@ -1,5 +1,31 @@
 # Progress Log
 
+## 2026-08-25 — Screenshot region translation runtime and configuration
+
+### Implemented
+
+- Added an explicit status-bar trigger and display-local region selection.
+- Added a frozen screenshot comparison panel for original image, recognized
+  text, and translated text, with target selection, copy, and retry controls.
+- Added a configuration-center switch for `features.region_translation`; saving
+  the switch starts or stops the runtime and updates the status-bar item.
+- Kept OCR and translation on loopback Ollama using `qwen2.5vl:7b` and
+  `translategemma:4b`, with shared local-model scheduling.
+
+### Verified
+
+- Full regression suite: 300 passed.
+- Screen Recording permission is currently available on this Mac.
+- A real local Ollama probe completed OCR (`Hello world`) and translation
+  (`你好，世界`) with final state `ready`.
+
+### Pending acceptance
+
+- The feature flag remains disabled in the user's config by default.
+- Real AppKit acceptance still requires enabling the switch, explicitly
+  triggering the status-bar action, dragging a region, and checking the panel
+  in front of the selected display.
+
 ## 2026-08-22 — Voice and overlay phase 1
 
 ### Approved design
