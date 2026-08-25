@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from AppKit import (
     NSBackingStoreBuffered,
+    NSApp,
     NSButton,
     NSImage,
     NSImageView,
@@ -65,9 +66,11 @@ class RegionTranslationPanelController:
 
     @staticmethod
     def _present_panel(panel) -> None:
-        """Show results without activating the accessory application."""
+        """Make the result panel visible after the selection overlay closes."""
         panel.setHidesOnDeactivate_(False)
+        panel.makeKeyAndOrderFront_(None)
         panel.orderFrontRegardless()
+        NSApp().activateIgnoringOtherApps_(True)
 
     def _build(self, snapshot: RegionTranslationPanelSnapshot) -> None:
         width = max(360.0, float(snapshot.selection.width))
