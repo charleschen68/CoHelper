@@ -36,6 +36,26 @@ class _SelectionCanvas(NSView):
         self.controller = controller
         return self
 
+    def _global_point(self, event):
+        point = event.locationInWindow()
+        frame = self.window().frame()
+        return (float(frame.origin.x + point.x), float(frame.origin.y + point.y))
+
+    def mouseDown_(self, event):
+        self.controller.mouse_down(self._global_point(event))
+
+    def mouseDragged_(self, event):
+        self.controller.mouse_dragged(self._global_point(event))
+
+    def mouseUp_(self, event):
+        self.controller.mouse_up(self._global_point(event))
+
+    def keyDown_(self, event):
+        if event.keyCode() == 53:
+            self.controller.cancel()
+            return
+        objc.super(_SelectionCanvas, self).keyDown_(event)
+
     def drawRect_(self, _rect):
         NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.35).setFill()
         NSBezierPath.fillRect_(self.bounds())
