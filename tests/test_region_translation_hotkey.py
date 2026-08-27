@@ -376,6 +376,28 @@ def test_hotkey_constructor_error_is_reported_without_masking_the_cause(monkeypa
     assert errors == [("⌥⇧T", "Carbon is unavailable")]
 
 
+def test_hotkey_error_path_sanitizes_native_details_and_reports_conflict():
+    app = CohelperApp.alloc().init()
+    statuses = []
+    errors = []
+    app._set_status = lambda status: statuses.append(status)
+    app._show_error = lambda title, message: errors.append((title, message))
+
+    app._region_translation_hotkey_error(
+        "⌥⇧T",
+        HotKeyRegistrationError("native status -9868", reason="conflict"),
+    )
+
+    assert statuses == ["cohelper (区域翻译快捷键不可用)"]
+    assert errors == [
+        (
+            "区域翻译快捷键不可用",
+            "⌥⇧T 可能已被其他应用或系统占用。"
+            "请在高级配置中更换区域翻译快捷键，或从菜单栏点击“翻译屏幕区域”手动开始。",
+        )
+    ]
+
+
 def test_manual_region_translation_remains_usable_when_hotkey_cleanup_fails(monkeypatch):
     class Runtime:
         def __init__(self, _config, **_callbacks):

@@ -16,9 +16,10 @@ _LOGGER = logging.getLogger(__name__)
 class HotKeyRegistrationError(RuntimeError):
     """Raised when the region-translation shortcut cannot be registered."""
 
-    def __init__(self, message: str, *, registration=None):
+    def __init__(self, message: str, *, registration=None, reason: str | None = None):
         super().__init__(message)
         self.registration = registration
+        self.reason = reason
 
 
 class _EventTypeSpec(ctypes.Structure):
@@ -153,7 +154,8 @@ class _CarbonHotKeyBackend:
         if status != 0:
             if status == self.EVENT_HOTKEY_EXISTS:
                 raise HotKeyRegistrationError(
-                    "global shortcut is already registered by another application"
+                    "global shortcut is already registered by another application",
+                    reason="conflict",
                 )
             raise HotKeyRegistrationError(
                 f"failed to register global shortcut (status {status})"

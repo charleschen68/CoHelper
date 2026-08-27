@@ -114,8 +114,15 @@ def region_translation_menu_binding(
     )
 
 
-def region_translation_hotkey_unavailable_message(shortcut_display: str) -> str:
+def region_translation_hotkey_unavailable_message(
+    shortcut_display: str, *, conflict: bool = False
+) -> str:
     """Return a safe, actionable message without exposing native error details."""
+    if conflict:
+        return (
+            f"{shortcut_display} 可能已被其他应用或系统占用。"
+            "请在高级配置中更换区域翻译快捷键，或从菜单栏点击“翻译屏幕区域”手动开始。"
+        )
     return (
         f"无法启用 {shortcut_display} 全局快捷键。"
         "你仍可从菜单栏点击“翻译屏幕区域”手动开始。"
@@ -482,7 +489,10 @@ class CohelperApp(NSObject):
         self._set_status("cohelper (区域翻译快捷键不可用)")
         self._show_error(
             "区域翻译快捷键不可用",
-            region_translation_hotkey_unavailable_message(shortcut_display),
+            region_translation_hotkey_unavailable_message(
+                shortcut_display,
+                conflict=getattr(_error, "reason", None) == "conflict",
+            ),
         )
 
     def _start_voice_feature(self):

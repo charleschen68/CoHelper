@@ -49,3 +49,12 @@ def test_unavailable_hotkey_message_is_actionable_without_native_error_text():
     message = region_translation_hotkey_unavailable_message("⌥⇧T")
 
     assert message == "无法启用 ⌥⇧T 全局快捷键。你仍可从菜单栏点击“翻译屏幕区域”手动开始。"
+
+
+def test_conflicting_hotkey_message_suggests_a_safe_alternative():
+    message = region_translation_hotkey_unavailable_message("⌥⇧T", conflict=True)
+
+    assert message == (
+        "⌥⇧T 可能已被其他应用或系统占用。"
+        "请在高级配置中更换区域翻译快捷键，或从菜单栏点击“翻译屏幕区域”手动开始。"
+    )
