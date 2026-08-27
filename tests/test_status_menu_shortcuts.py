@@ -1,4 +1,8 @@
-from cohelper_app import build_status_menu, region_translation_menu_binding
+from cohelper_app import (
+    build_status_menu,
+    region_translation_hotkey_unavailable_message,
+    region_translation_menu_binding,
+)
 from cohelper_core import Config
 
 
@@ -39,3 +43,9 @@ def test_menu_does_not_advertise_an_unavailable_global_shortcut():
     assert binding.key_equivalent == ""
     assert binding.modifier_mask == 0
     assert binding.enabled is True
+
+
+def test_unavailable_hotkey_message_is_actionable_without_native_error_text():
+    message = region_translation_hotkey_unavailable_message("⌥⇧T")
+
+    assert message == "无法启用 ⌥⇧T 全局快捷键。你仍可从菜单栏点击“翻译屏幕区域”手动开始。"
