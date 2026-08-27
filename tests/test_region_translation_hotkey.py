@@ -173,6 +173,30 @@ def test_failed_native_cleanup_retains_registration_for_safe_retry():
     assert backend.unregistered == [registration]
 
 
+def test_failed_native_cleanup_disarms_shortcut_before_retry():
+    backend = RecordingBackend()
+    triggers = []
+    hotkey = MacRegionTranslationHotKey(
+        lambda: triggers.append("translate"),
+        parse_shortcut("Option-Shift-T"),
+        backend=backend,
+    )
+    hotkey.start()
+    callback = backend.registrations[0][2]
+    backend.unregister = lambda _token: (_ for _ in ()).throw(
+        HotKeyRegistrationError("native cleanup failed")
+    )
+
+    with pytest.raises(HotKeyRegistrationError, match="cleanup"):
+        hotkey.stop()
+
+    callback()
+
+    assert hotkey.is_running is True
+    assert hotkey.is_armed is False
+    assert triggers == []
+
+
 def test_carbon_handler_dispatches_only_the_registered_hotkey_id():
     carbon = RecordingCarbon()
     backend = _CarbonHotKeyBackend(carbon=carbon)
@@ -273,6 +297,10 @@ def test_enabled_app_hotkey_triggers_selection_and_stops_with_feature(monkeypatc
         def start(self):
             self.started = True
 
+        @property
+        def is_armed(self):
+            return self.started and not self.stopped
+
         def stop(self):
             self.stopped = True
 
@@ -318,3 +346,74 @@ def test_disabled_feature_does_not_construct_global_hotkey(monkeypatch):
     app._start_region_translation_feature()
 
     assert app.region_translation_hotkey is None
+
+
+def test_hotkey_constructor_error_is_reported_without_masking_the_cause(monkeypatch):
+    class Runtime:
+        def __init__(self, _config, **_callbacks):
+            pass
+
+    def fail_constructor(_callback, _shortcut):
+        raise HotKeyRegistrationError("Carbon is unavailable")
+
+    errors = []
+    monkeypatch.setattr(runtime_module, "RegionTranslationRuntime", Runtime)
+    monkeypatch.setattr(hotkey_module, "MacRegionTranslationHotKey", fail_constructor)
+    monkeypatch.setattr(
+        cohelper_app.AppHelper,
+        "callAfter",
+        lambda callback, *args: callback(*args),
+    )
+    app = CohelperApp.alloc().init()
+    app.config = Config({"features": {"region_translation": True}})
+    app._region_translation_hotkey_error = lambda shortcut, error: errors.append(
+        (shortcut, str(error))
+    )
+
+    app._start_region_translation_feature()
+
+    assert app.region_translation_hotkey is None
+    assert errors == [("⌥⇧T", "Carbon is unavailable")]
+
+
+def test_manual_region_translation_remains_usable_when_hotkey_cleanup_fails(monkeypatch):
+    class Runtime:
+        def __init__(self, _config, **_callbacks):
+            self.trigger_count = 0
+
+        def trigger(self):
+            self.trigger_count += 1
+
+    class HotKey:
+        shortcut = parse_shortcut("Option-Shift-T")
+
+        def __init__(self):
+            self.stop_count = 0
+
+        @property
+        def is_armed(self):
+            return False
+
+        def stop(self):
+            self.stop_count += 1
+            raise HotKeyRegistrationError("native cleanup failed")
+
+    monkeypatch.setattr(runtime_module, "RegionTranslationRuntime", Runtime)
+    monkeypatch.setattr(
+        cohelper_app.AppHelper,
+        "callAfter",
+        lambda callback, *args: callback(*args),
+    )
+    app = CohelperApp.alloc().init()
+    app.config = Config({"features": {"region_translation": True}})
+    hotkey = HotKey()
+    errors = []
+    app.region_translation_hotkey = hotkey
+    app._region_translation_hotkey_error = lambda *_args: errors.append("reported")
+
+    app.translateRegion_(None)
+    app.translateRegion_(None)
+
+    assert app.region_translation_runtime.trigger_count == 2
+    assert hotkey.stop_count == 1
+    assert errors == ["reported"]

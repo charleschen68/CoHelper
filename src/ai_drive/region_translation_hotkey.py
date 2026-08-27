@@ -221,10 +221,16 @@ class MacRegionTranslationHotKey:
         self._shortcut = shortcut
         self._backend = backend or _CarbonHotKeyBackend()
         self._registration = None
+        self._armed = False
 
     @property
     def is_running(self) -> bool:
         return self._registration is not None
+
+    @property
+    def is_armed(self) -> bool:
+        """Whether a native event is currently permitted to invoke the action."""
+        return self._armed
 
     @property
     def shortcut(self) -> ShortcutSpec:
@@ -237,20 +243,29 @@ class MacRegionTranslationHotKey:
             self._registration = self._backend.register(
                 self._shortcut.carbon_key_code,
                 self._shortcut.carbon_modifiers,
-                self._on_pressed,
-                # Never suppress another application's non-exclusive binding.
+                self._dispatch,
+                # Do not suppress another application's shortcut binding.  Carbon
+                # still reports collisions that it can detect as a registration error.
                 exclusive=False,
             )
+            self._armed = True
         except HotKeyRegistrationError as exc:
             if exc.registration is not None:
                 self._registration = exc.registration
             raise
 
     def stop(self) -> None:
+        # A failed native cleanup may leave Carbon's callback installed.  Disarm
+        # before releasing resources so that stale bindings cannot start capture.
+        self._armed = False
         if self._registration is None:
             return
         self._backend.unregister(self._registration)
         self._registration = None
+
+    def _dispatch(self) -> None:
+        if self._armed:
+            self._on_pressed()
 
 
 __all__ = ["HotKeyRegistrationError", "MacRegionTranslationHotKey"]

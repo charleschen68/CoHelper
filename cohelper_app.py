@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 import objc
@@ -85,9 +86,42 @@ from cohelper_setup import EnvironmentDoctor, KeychainStore, SetupInstaller, Set
 OUTPUT_SOCKET_PATH = APP_SUPPORT / "output" / "events.sock"
 
 
-def build_status_menu(config):
-    """Build the user-visible menu from validated configuration."""
+@dataclass(frozen=True)
+class RegionTranslationMenuBinding:
+    title: str
+    key_equivalent: str
+    modifier_mask: int
+    enabled: bool
+
+
+def region_translation_menu_binding(
+    config, *, region_translation_shortcut_active=None
+) -> RegionTranslationMenuBinding:
+    """Describe the region-translation menu action without requiring AppKit."""
     shortcut = parse_shortcut(config.section("region_translation")["shortcut"])
+    enabled = config.enabled("region_translation")
+    if region_translation_shortcut_active is None:
+        region_translation_shortcut_active = enabled
+    if enabled and not region_translation_shortcut_active:
+        return RegionTranslationMenuBinding(
+            "翻译屏幕区域（快捷键不可用）", "", 0, True
+        )
+    return RegionTranslationMenuBinding(
+        "翻译屏幕区域",
+        shortcut.key_equivalent,
+        shortcut.appkit_modifiers,
+        enabled,
+    )
+
+
+def build_status_menu(
+    config, *, region_translation_shortcut_active=None
+):
+    """Build the user-visible menu from validated configuration."""
+    region_binding = region_translation_menu_binding(
+        config,
+        region_translation_shortcut_active=region_translation_shortcut_active,
+    )
     menu = NSMenu.alloc().init()
     menu.addItemWithTitle_action_keyEquivalent_("暂停监听", "togglePause:", "")
     menu.addItemWithTitle_action_keyEquivalent_(
@@ -102,10 +136,11 @@ def build_status_menu(config):
     menu.addItemWithTitle_action_keyEquivalent_("模型设置", "configureModels:", "")
     menu.addItemWithTitle_action_keyEquivalent_("高级配置", "configureAdvanced:", "")
     region_item = menu.addItemWithTitle_action_keyEquivalent_(
-        "翻译屏幕区域", "translateRegion:", shortcut.key_equivalent
+        region_binding.title, "translateRegion:", region_binding.key_equivalent
     )
-    region_item.setKeyEquivalentModifierMask_(shortcut.appkit_modifiers)
-    region_item.setEnabled_(config.enabled("region_translation"))
+    if region_binding.key_equivalent:
+        region_item.setKeyEquivalentModifierMask_(region_binding.modifier_mask)
+    region_item.setEnabled_(region_binding.enabled)
     menu.addItemWithTitle_action_keyEquivalent_("请求视觉操作权限", "requestVisionPermissions:", "")
     menu.addItemWithTitle_action_keyEquivalent_("取消环境设置", "cancelSetup:", "")
     menu.addItemWithTitle_action_keyEquivalent_("打开配置目录", "openConfig:", "")
@@ -154,6 +189,8 @@ class CohelperApp(NSObject):
         self.region_translation_runtime = None
         self.region_translation_panel = None
         self.region_translation_hotkey = None
+        self.region_translation_shortcut_active = False
+        self.region_translation_hotkey_cleanup_failed = False
         self.region_translation_menu_item = None
         try:
             self.voice_router = VoiceCommandRouter(self.config.section("voice")["command_aliases"])
@@ -296,79 +333,115 @@ class CohelperApp(NSObject):
     def _build_status_item(self):
         self.status_item = NSStatusBar.systemStatusBar().statusItemWithLength_(-1)
         self.status_item.button().setTitle_("cohelper")
-        menu, self.region_translation_menu_item = build_status_menu(self.config)
+        menu, self.region_translation_menu_item = build_status_menu(
+            self.config,
+            region_translation_shortcut_active=self.region_translation_shortcut_active,
+        )
+        self.status_item.setMenu_(menu)
+
+    def _refresh_status_menu(self):
+        if self.status_item is None:
+            return
+        menu, self.region_translation_menu_item = build_status_menu(
+            self.config,
+            region_translation_shortcut_active=self.region_translation_shortcut_active,
+        )
         self.status_item.setMenu_(menu)
 
     def _start_region_translation_feature(self):
-        if self.region_translation_runtime is not None or not self.config.enabled("region_translation"):
-            return
+        if not self.config.enabled("region_translation"):
+            self.region_translation_shortcut_active = False
+            self._refresh_status_menu()
+            return False
         from ai_drive.region_translation_hotkey import (
             HotKeyRegistrationError,
             MacRegionTranslationHotKey,
         )
         from ai_drive.region_translation_runtime import RegionTranslationRuntime
 
-        self.region_translation_runtime = RegionTranslationRuntime(
-            self.config,
-            on_panel_change=lambda snapshot: AppHelper.callAfter(
-                self._show_region_translation_panel, snapshot
-            ),
-            on_error=lambda error: AppHelper.callAfter(self._region_translation_error, error),
-        )
+        if (
+            self.region_translation_runtime is not None
+            and self.region_translation_hotkey is not None
+            and self.region_translation_hotkey.is_armed
+        ):
+            return True
+        if self.region_translation_runtime is None:
+            self.region_translation_runtime = RegionTranslationRuntime(
+                self.config,
+                on_panel_change=lambda snapshot: AppHelper.callAfter(
+                    self._show_region_translation_panel, snapshot
+                ),
+                on_error=lambda error: AppHelper.callAfter(self._region_translation_error, error),
+            )
+        if self.region_translation_hotkey_cleanup_failed:
+            return True
         if self.region_translation_hotkey is not None:
             try:
                 self.region_translation_hotkey.stop()
-            except Exception as exc:
+            except HotKeyRegistrationError as exc:
                 AppHelper.callAfter(
                     self._region_translation_hotkey_error,
                     self.region_translation_hotkey.shortcut.display,
                     exc,
                 )
-                return
+                self.region_translation_shortcut_active = False
+                self.region_translation_hotkey_cleanup_failed = True
+                self._refresh_status_menu()
+                return True
             self.region_translation_hotkey = None
+        shortcut = parse_shortcut(self.config.section("region_translation")["shortcut"])
+        hotkey = None
         try:
-            shortcut = parse_shortcut(
-                self.config.section("region_translation")["shortcut"]
-            )
             hotkey = MacRegionTranslationHotKey(
                 lambda: AppHelper.callAfter(self.translateRegion_, None),
                 shortcut,
             )
             hotkey.start()
             self.region_translation_hotkey = hotkey
+            self.region_translation_shortcut_active = hotkey.is_armed
+            self.region_translation_hotkey_cleanup_failed = False
         except HotKeyRegistrationError as exc:
-            self.region_translation_hotkey = hotkey if hotkey.is_running else None
+            self.region_translation_hotkey = (
+                hotkey if hotkey is not None and hotkey.is_running else None
+            )
+            self.region_translation_shortcut_active = False
             AppHelper.callAfter(
                 self._region_translation_hotkey_error,
                 shortcut.display,
                 exc,
             )
+        self._refresh_status_menu()
+        return True
 
     def _stop_region_translation_feature(self):
         hotkey = self.region_translation_hotkey
+        self.region_translation_shortcut_active = False
         panel, self.region_translation_panel = self.region_translation_panel, None
         runtime, self.region_translation_runtime = self.region_translation_runtime, None
-        if hotkey is not None:
+        if hotkey is not None and not self.region_translation_hotkey_cleanup_failed:
             try:
                 hotkey.stop()
-            except Exception as exc:
+            except HotKeyRegistrationError as exc:
                 AppHelper.callAfter(
                     self._region_translation_hotkey_error,
                     hotkey.shortcut.display,
                     exc,
                 )
+                self.region_translation_hotkey_cleanup_failed = True
             else:
                 self.region_translation_hotkey = None
         if panel is not None:
             panel.close()
         if runtime is not None:
             runtime.close()
+        self._refresh_status_menu()
 
     def translateRegion_(self, _sender):
         if not self.config.enabled("region_translation"):
             self._show_error("区域翻译未启用", "请先在高级配置中启用区域翻译，然后重新启动 cohelper。")
             return
-        self._start_region_translation_feature()
+        if not self._start_region_translation_feature() or self.region_translation_runtime is None:
+            return
         try:
             self.region_translation_runtime.trigger()
             self._set_status("cohelper (选择区域)")
@@ -1465,9 +1538,7 @@ class CohelperApp(NSObject):
                 self._start_region_translation_feature()
         elif previous_region_translation_enabled:
             self._stop_region_translation_feature()
-        if self.status_item is not None:
-            menu, self.region_translation_menu_item = build_status_menu(candidate)
-            self.status_item.setMenu_(menu)
+        self._refresh_status_menu()
         if candidate.enabled("voice_output") and not previous_voice_output_enabled:
             self._start_speech_feature()
         elif previous_voice_output_enabled and not candidate.enabled("voice_output"):
