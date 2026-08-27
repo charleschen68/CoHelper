@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from typing import Callable
 
 from ai_drive.shortcuts import ShortcutSpec
@@ -13,10 +14,20 @@ from ai_drive.shortcuts import ShortcutSpec
 _LOGGER = logging.getLogger(__name__)
 
 
+class HotKeyFailureReason(str, Enum):
+    CONFLICT = "conflict"
+
+
 class HotKeyRegistrationError(RuntimeError):
     """Raised when the region-translation shortcut cannot be registered."""
 
-    def __init__(self, message: str, *, registration=None, reason: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        registration=None,
+        reason: HotKeyFailureReason | None = None,
+    ):
         super().__init__(message)
         self.registration = registration
         self.reason = reason
@@ -155,7 +166,7 @@ class _CarbonHotKeyBackend:
             if status == self.EVENT_HOTKEY_EXISTS:
                 raise HotKeyRegistrationError(
                     "global shortcut is already registered by another application",
-                    reason="conflict",
+                    reason=HotKeyFailureReason.CONFLICT,
                 )
             raise HotKeyRegistrationError(
                 f"failed to register global shortcut (status {status})"
@@ -270,4 +281,8 @@ class MacRegionTranslationHotKey:
             self._on_pressed()
 
 
-__all__ = ["HotKeyRegistrationError", "MacRegionTranslationHotKey"]
+__all__ = [
+    "HotKeyFailureReason",
+    "HotKeyRegistrationError",
+    "MacRegionTranslationHotKey",
+]

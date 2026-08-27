@@ -7,6 +7,7 @@ import ai_drive.region_translation_runtime as runtime_module
 import cohelper_app
 from ai_drive.region_translation_hotkey import (
     HotKeyRegistrationError,
+    HotKeyFailureReason,
     MacRegionTranslationHotKey,
     _CarbonHotKeyBackend,
     _EventHotKeyID,
@@ -48,6 +49,7 @@ class RecordingCarbon:
         self.received_id = None
         self.get_parameter_status = 0
         self.install_status = 0
+        self.register_status = 0
         self.unregister_status = 0
         self.remove_status = 0
         self.unregister_calls = 0
@@ -66,6 +68,8 @@ class RecordingCarbon:
 
     def _register(self, _key_code, _modifiers, hot_key_id, _target, _options, out_ref):
         self.received_id = hot_key_id
+        if self.register_status != 0:
+            return self.register_status
         self._set_ref(out_ref, 200)
         return 0
 
@@ -139,6 +143,17 @@ def test_shortcut_conflict_is_reported_without_partial_registration():
         hotkey.start()
 
     assert hotkey.is_running is False
+
+
+def test_carbon_conflict_is_classified_without_exposing_native_status():
+    carbon = RecordingCarbon()
+    carbon.register_status = _CarbonHotKeyBackend.EVENT_HOTKEY_EXISTS
+    backend = _CarbonHotKeyBackend(carbon=carbon)
+
+    with pytest.raises(HotKeyRegistrationError) as caught:
+        backend.register(0x11, (1 << 11) | (1 << 9), lambda: None, exclusive=False)
+
+    assert caught.value.reason == HotKeyFailureReason.CONFLICT
 
 
 def test_failed_native_cleanup_retains_registration_for_safe_retry():
@@ -385,7 +400,9 @@ def test_hotkey_error_path_sanitizes_native_details_and_reports_conflict():
 
     app._region_translation_hotkey_error(
         "⌥⇧T",
-        HotKeyRegistrationError("native status -9868", reason="conflict"),
+        HotKeyRegistrationError(
+            "native status -9868", reason=HotKeyFailureReason.CONFLICT
+        ),
     )
 
     assert statuses == ["cohelper (区域翻译快捷键不可用)"]
@@ -396,6 +413,47 @@ def test_hotkey_error_path_sanitizes_native_details_and_reports_conflict():
             "请在高级配置中更换区域翻译快捷键，或从菜单栏点击“翻译屏幕区域”手动开始。",
         )
     ]
+
+
+def test_manual_translation_latches_an_unavailable_hotkey_until_configuration_changes(monkeypatch):
+    created_hotkeys = []
+
+    class Runtime:
+        def __init__(self, _config, **_callbacks):
+            self.trigger_count = 0
+
+        def trigger(self):
+            self.trigger_count += 1
+
+    class HotKey:
+        def __init__(self, _callback, _shortcut):
+            created_hotkeys.append(self)
+
+        @property
+        def is_running(self):
+            return False
+
+        def start(self):
+            raise HotKeyRegistrationError("native status -9868")
+
+    errors = []
+    monkeypatch.setattr(runtime_module, "RegionTranslationRuntime", Runtime)
+    monkeypatch.setattr(hotkey_module, "MacRegionTranslationHotKey", HotKey)
+    monkeypatch.setattr(
+        cohelper_app.AppHelper,
+        "callAfter",
+        lambda callback, *args: callback(*args),
+    )
+    app = CohelperApp.alloc().init()
+    app.config = Config({"features": {"region_translation": True}})
+    app._region_translation_hotkey_error = lambda *_args: errors.append("reported")
+
+    app.translateRegion_(None)
+    app.translateRegion_(None)
+
+    assert len(created_hotkeys) == 1
+    assert errors == ["reported"]
+    assert app.region_translation_runtime.trigger_count == 2
 
 
 def test_manual_region_translation_remains_usable_when_hotkey_cleanup_fails(monkeypatch):
@@ -439,3 +497,34 @@ def test_manual_region_translation_remains_usable_when_hotkey_cleanup_fails(monk
     assert app.region_translation_runtime.trigger_count == 2
     assert hotkey.stop_count == 1
     assert errors == ["reported"]
+
+
+def test_config_rebind_retries_a_previous_hotkey_cleanup_failure(monkeypatch):
+    class HotKey:
+        shortcut = parse_shortcut("Option-Shift-T")
+
+        def __init__(self):
+            self.stop_count = 0
+
+        def stop(self):
+            self.stop_count += 1
+            if self.stop_count == 1:
+                raise HotKeyRegistrationError("temporary native cleanup failure")
+
+    monkeypatch.setattr(
+        cohelper_app.AppHelper,
+        "callAfter",
+        lambda callback, *args: callback(*args),
+    )
+    app = CohelperApp.alloc().init()
+    app.config = Config({"features": {"region_translation": True}})
+    hotkey = HotKey()
+    app.region_translation_hotkey = hotkey
+    app._region_translation_hotkey_error = lambda *_args: None
+
+    app._stop_region_translation_feature()
+    app._stop_region_translation_feature(retry_hotkey_cleanup=True)
+
+    assert hotkey.stop_count == 2
+    assert app.region_translation_hotkey is None
+    assert app.region_translation_hotkey_cleanup_failed is False

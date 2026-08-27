@@ -129,6 +129,11 @@ def region_translation_hotkey_unavailable_message(
     )
 
 
+def region_translation_error_message(_error: Exception) -> str:
+    """Keep unexpected failures actionable without exposing exception details."""
+    return "区域翻译出现问题，请关闭结果面板后重试。"
+
+
 def build_status_menu(
     config, *, region_translation_shortcut_active=None
 ):
@@ -206,6 +211,7 @@ class CohelperApp(NSObject):
         self.region_translation_hotkey = None
         self.region_translation_shortcut_active = False
         self.region_translation_hotkey_cleanup_failed = False
+        self.region_translation_hotkey_unavailable = False
         self.region_translation_menu_item = None
         try:
             self.voice_router = VoiceCommandRouter(self.config.section("voice")["command_aliases"])
@@ -390,6 +396,8 @@ class CohelperApp(NSObject):
             )
         if self.region_translation_hotkey_cleanup_failed:
             return True
+        if self.region_translation_hotkey_unavailable:
+            return True
         if self.region_translation_hotkey is not None:
             try:
                 self.region_translation_hotkey.stop()
@@ -415,11 +423,13 @@ class CohelperApp(NSObject):
             self.region_translation_hotkey = hotkey
             self.region_translation_shortcut_active = hotkey.is_armed
             self.region_translation_hotkey_cleanup_failed = False
+            self.region_translation_hotkey_unavailable = False
         except HotKeyRegistrationError as exc:
             self.region_translation_hotkey = (
                 hotkey if hotkey is not None and hotkey.is_running else None
             )
             self.region_translation_shortcut_active = False
+            self.region_translation_hotkey_unavailable = True
             AppHelper.callAfter(
                 self._region_translation_hotkey_error,
                 shortcut.display,
@@ -428,12 +438,16 @@ class CohelperApp(NSObject):
         self._refresh_status_menu()
         return True
 
-    def _stop_region_translation_feature(self):
+    def _stop_region_translation_feature(self, *, retry_hotkey_cleanup=False):
+        from ai_drive.region_translation_hotkey import HotKeyRegistrationError
+
         hotkey = self.region_translation_hotkey
         self.region_translation_shortcut_active = False
         panel, self.region_translation_panel = self.region_translation_panel, None
         runtime, self.region_translation_runtime = self.region_translation_runtime, None
-        if hotkey is not None and not self.region_translation_hotkey_cleanup_failed:
+        if hotkey is not None and (
+            retry_hotkey_cleanup or not self.region_translation_hotkey_cleanup_failed
+        ):
             try:
                 hotkey.stop()
             except HotKeyRegistrationError as exc:
@@ -445,6 +459,7 @@ class CohelperApp(NSObject):
                 self.region_translation_hotkey_cleanup_failed = True
             else:
                 self.region_translation_hotkey = None
+                self.region_translation_hotkey_cleanup_failed = False
         if panel is not None:
             panel.close()
         if runtime is not None:
@@ -483,15 +498,17 @@ class CohelperApp(NSObject):
 
     def _region_translation_error(self, error):
         self._set_status("cohelper (区域翻译失败)")
-        self._show_error("区域翻译失败", f"{type(error).__name__}: {error}")
+        self._show_error("区域翻译失败", region_translation_error_message(error))
 
     def _region_translation_hotkey_error(self, shortcut_display, _error):
+        from ai_drive.region_translation_hotkey import HotKeyFailureReason
+
         self._set_status("cohelper (区域翻译快捷键不可用)")
         self._show_error(
             "区域翻译快捷键不可用",
             region_translation_hotkey_unavailable_message(
                 shortcut_display,
-                conflict=getattr(_error, "reason", None) == "conflict",
+                conflict=getattr(_error, "reason", None) == HotKeyFailureReason.CONFLICT,
             ),
         )
 
@@ -1535,6 +1552,12 @@ class CohelperApp(NSObject):
             "region_translation"
         )["shortcut"]
         self.config = candidate
+        if (
+            candidate.enabled("region_translation") != previous_region_translation_enabled
+            or candidate.section("region_translation")["shortcut"]
+            != previous_region_translation_shortcut
+        ):
+            self.region_translation_hotkey_unavailable = False
         config_generation = self.coordinator.update_config(candidate)
         self.output_generation = max(self.output_generation, config_generation)
         if candidate.enabled("overlay") and not previous_overlay_enabled:
@@ -1552,10 +1575,10 @@ class CohelperApp(NSObject):
                 candidate.section("region_translation")["shortcut"]
                 != previous_region_translation_shortcut
             ):
-                self._stop_region_translation_feature()
+                self._stop_region_translation_feature(retry_hotkey_cleanup=True)
                 self._start_region_translation_feature()
         elif previous_region_translation_enabled:
-            self._stop_region_translation_feature()
+            self._stop_region_translation_feature(retry_hotkey_cleanup=True)
         self._refresh_status_menu()
         if candidate.enabled("voice_output") and not previous_voice_output_enabled:
             self._start_speech_feature()
